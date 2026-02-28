@@ -1,0 +1,6 @@
+ALTER TABLE cashbox
+ADD COLUMN tax_regime TEXT NOT NULL DEFAULT 'NO_VAT';
+
+ALTER TABLE cashbox
+ADD COLUMN default_vat_group TEXT NOT NULL DEFAULT 'NO_VAT';
+

@@ -1,0 +1,29 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: superkassa-core
+  main:
+    banner-mode: console
+  jackson:
+    serialization:
+      fail-on-empty-beans: false
+      write-dates-as-timestamps: true
+
+app:
+  version: 1.0
+
+springdoc:
+  api-docs:
+    path: /openapi.yaml
+  swagger-ui:
+    path: /swagger
+    display-request-duration: true
+    # Отключаем сортировку тегов на клиенте, чтобы использовать порядок из OpenApiCustomizer
+    # Если установить в "alpha", Swagger UI будет сортировать по алфавиту и игнорировать порядок из OpenAPI
+    # Оставляем пустым или не указываем, чтобы использовать порядок из спецификации
+    operations-sorter: method
+    defaultModelsExpandDepth: -1
+  # Включаем сохранение порядка ключей в YAML/JSON для правильного порядка тегов
+  writer-with-order-by-keys: true

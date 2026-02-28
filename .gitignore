@@ -1,0 +1,70 @@
+# Gradle
+.gradle/
+build/
+
+# Локальный JDK (если качается в проект)
+.jdk/
+
+# Kotlin
+.kotlin/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Eclipse
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+
+# NetBeans
+nbproject/private/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+
+# VS Code
+.vscode/
+
+# Cursor (убери строку ниже, если коммитишь .cursor/rules)
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Локальные настройки и секреты
+local.properties
+.env
+.env.local
+.env.*.local
+# Конфиг с токенами/паролями — не коммитить; использовать config/core-settings.example.json как шаблон
+config/core-settings.json
+
+# Логи и временные файлы
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+*.backup
+
+# Локальные БД (если создаёшь рядом с проектом)
+*.db
+*.sqlite
+*.sqlite3
+
+# JVM / отладочные дампы
+hs_err_pid*
+.attach_pid*
+replay_pid*

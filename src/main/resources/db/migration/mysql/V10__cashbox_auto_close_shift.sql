@@ -1,0 +1,2 @@
+ALTER TABLE cashbox
+ADD COLUMN auto_close_shift TINYINT(1) NOT NULL DEFAULT 0;

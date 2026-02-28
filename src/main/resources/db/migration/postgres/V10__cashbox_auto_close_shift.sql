@@ -1,0 +1,2 @@
+ALTER TABLE cashbox
+ADD COLUMN auto_close_shift BOOLEAN NOT NULL DEFAULT FALSE;
