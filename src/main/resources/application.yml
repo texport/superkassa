@@ -14,6 +14,11 @@ spring:
 app:
   version: 1.0
 
+# Интервал воркера offline-очереди (мс). Обрабатывает команды и отправляет в ОФД.
+offline-queue:
+  worker:
+    interval-ms: 5000
+
 springdoc:
   api-docs:
     path: /openapi.yaml

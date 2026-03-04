@@ -48,8 +48,11 @@ object SystemTimeGuard {
                 val deltaMonoMs = (System.nanoTime() - lastMonoNs!!) / 1_000_000
                 val expected = lastWallMs!! + deltaMonoMs
                 val skew = abs(now - expected)
+                // На практике на рабочих серверах возможны разовые корректировки часов (NTP),
+                // которые приводят к большим "скачкам" и, как следствие, к постоянной ошибке.
+                // Вместо жёсткого отказа просто логируем предупреждение и продолжаем.
                 if (skew > maxMonotonicSkewMs) {
-                    return TimeCheckResult(false, "MONOTONIC_SKEW")
+                    logger.warn("Обнаружен скачок системного времени относительно монотонных часов: skew={} ms", skew)
                 }
             }
             lastWallMs = now

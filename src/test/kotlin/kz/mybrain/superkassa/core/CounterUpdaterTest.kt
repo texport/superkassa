@@ -11,6 +11,7 @@ import kz.mybrain.superkassa.core.domain.model.PaymentType
 import kz.mybrain.superkassa.core.domain.model.ReceiptItem
 import kz.mybrain.superkassa.core.domain.model.ReceiptOperationType
 import kz.mybrain.superkassa.core.domain.model.ReceiptPayment
+import kz.mybrain.superkassa.core.domain.model.QueueTaskDto
 import kz.mybrain.superkassa.core.domain.model.ReceiptRequest
 import kz.mybrain.superkassa.core.domain.model.ShiftInfo
 import kz.mybrain.superkassa.core.domain.model.ShiftStatus
@@ -103,6 +104,16 @@ private class InMemoryStoragePort : StoragePort {
     override fun deleteKkm(id: String): Boolean = kkms.remove(id) != null
 
     override fun hasOfflineQueue(kkmId: String): Boolean = false
+
+    override fun enqueueQueueTask(dto: QueueTaskDto): Boolean = true
+    override fun listQueueTasksByCashbox(cashboxId: String, lane: String, limit: Int, offset: Int): List<QueueTaskDto> = emptyList()
+    override fun nextPendingQueueTask(cashboxId: String, lane: String, now: Long): QueueTaskDto? = null
+    override fun updateQueueTaskStatus(id: String, status: String, attempt: Int, lastError: String?, nextAttemptAt: Long?): Boolean = true
+    override fun markQueueTaskInProgress(id: String, now: Long): Boolean = true
+    override fun deleteQueueTasksByCashbox(cashboxId: String): Boolean = true
+    override fun tryAcquireQueueLock(cashboxId: String, ownerId: String, leaseUntil: Long, acquiredAt: Long): Boolean = true
+    override fun renewQueueLock(cashboxId: String, ownerId: String, leaseUntil: Long, now: Long): Boolean = true
+    override fun releaseQueueLock(cashboxId: String, ownerId: String): Boolean = true
 
     override fun deleteKkmCompletely(kkmId: String): Boolean {
         kkms.remove(kkmId)

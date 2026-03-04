@@ -54,7 +54,15 @@ class OfdCommandRequestBuilder(
         val deviceId = systemId.toLongOrNull()
             ?: throw ValidationException(ErrorMessages.kkmSystemIdInvalid(systemId), "KKM_SYSTEM_ID_INVALID")
 
-        val requiresService = commandType == OfdCommandType.SYSTEM || commandType == OfdCommandType.INFO
+        // payload.service обязателен для всех команд от кассы (протокол ОФД)
+        val requiresService = commandType in setOf(
+            OfdCommandType.SYSTEM,
+            OfdCommandType.INFO,
+            OfdCommandType.TICKET,
+            OfdCommandType.MONEY_PLACEMENT,
+            OfdCommandType.REPORT,
+            OfdCommandType.CLOSE_SHIFT
+        )
         val serviceInfo = if (requiresService) {
             serviceInfoOverride ?: kkm.ofdServiceInfo ?: defaultServiceInfo()
         } else {
@@ -73,6 +81,12 @@ class OfdCommandRequestBuilder(
             factoryNumberOverride ?: kkm.factoryNumber
         }
 
+        // Первая попытка онлайн: begin = end = now; при офлайн-повторе end обновит worker
+        val (offlineBegin, offlineEnd) = if (requiresService) {
+            now to now
+        } else {
+            (now - 60_000) to now
+        }
         return OfdCommandRequest(
             kkmId = kkm.id,
             commandType = commandType,
@@ -86,8 +100,8 @@ class OfdCommandRequestBuilder(
             factoryNumber = factoryNumber,
             ofdSystemId = systemId,
             serviceInfo = serviceInfo,
-            offlineBeginMillis = now - 60_000,
-            offlineEndMillis = now
+            offlineBeginMillis = offlineBegin,
+            offlineEndMillis = offlineEnd
         )
     }
 }

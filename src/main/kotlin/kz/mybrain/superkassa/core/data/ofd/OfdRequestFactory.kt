@@ -1,5 +1,6 @@
 package kz.mybrain.superkassa.core.data.ofd
 
+import kz.mybrain.superkassa.core.application.zxreport.ZxReportBuilder
 import kz.mybrain.superkassa.core.domain.model.Money
 import kz.mybrain.superkassa.core.domain.model.OfdServiceInfo
 import kz.mybrain.superkassa.core.domain.model.PaymentType
@@ -14,13 +15,76 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.Instant
-import java.time.ZoneOffset
+import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.util.zip.CRC32
 
 /**
  * Фабрика JSON-запросов к ОФД.
  */
 object OfdRequestFactory {
+    /**
+     * Строит JSON-блок payload.service для встраивания в команды TICKET, MONEY_PLACEMENT и др.
+     * security_stats — координаты из базы (при добавлении кассы), offline_period, get_reg_info, reg_info.
+     */
+    fun buildServicePayload(
+        serviceInfo: OfdServiceInfo,
+        registrationNumber: String,
+        factoryNumber: String,
+        systemId: String,
+        offlineBeginMillis: Long,
+        offlineEndMillis: Long
+    ): JsonObject {
+        val begin = toDateTime(offlineBeginMillis)
+        val end = toDateTime(offlineEndMillis)
+        return buildJsonObject {
+            put("getRegInfo", JsonPrimitive(true))
+            put(
+                "offlinePeriod",
+                buildJsonObject {
+                    put("beginTime", begin)
+                    put("endTime", end)
+                }
+            )
+            put(
+                "securityStats",
+                buildJsonObject {
+                    put(
+                        "geoPosition",
+                        buildJsonObject {
+                            put("latitude", JsonPrimitive(serviceInfo.geoLatitude))
+                            put("longitude", JsonPrimitive(serviceInfo.geoLongitude))
+                            put("source", JsonPrimitive(serviceInfo.geoSource))
+                        }
+                    )
+                }
+            )
+            put(
+                "regInfo",
+                buildJsonObject {
+                    put(
+                        "kkm",
+                        buildJsonObject {
+                            put("fnsKkmId", JsonPrimitive(registrationNumber))
+                            put("serialNumber", JsonPrimitive(factoryNumber))
+                            put("kkmId", JsonPrimitive(systemId))
+                        }
+                    )
+                    put(
+                        "org",
+                        buildJsonObject {
+                            put("title", JsonPrimitive(serviceInfo.orgTitle))
+                            put("address", JsonPrimitive(serviceInfo.orgAddress))
+                            put("addressKz", JsonPrimitive(serviceInfo.orgAddressKz))
+                            put("inn", JsonPrimitive(serviceInfo.orgInn))
+                            put("okved", JsonPrimitive(serviceInfo.orgOkved))
+                        }
+                    )
+                }
+            )
+        }
+    }
+
     fun buildServiceRequest(
         ofdId: String,
         protocolVersion: String,
@@ -35,9 +99,10 @@ object OfdRequestFactory {
         systemId: String,
         serviceInfo: OfdServiceInfo
     ): JsonObject {
-        val begin = toDateTime(offlineBeginMillis)
-        val end = toDateTime(offlineEndMillis)
-
+        val servicePayload = buildServicePayload(
+            serviceInfo, registrationNumber, factoryNumber, systemId,
+            offlineBeginMillis, offlineEndMillis
+        )
         return buildJsonObject {
             put("ofdId", JsonPrimitive(ofdId))
             put("protocolVersion", JsonPrimitive(protocolVersion))
@@ -53,57 +118,7 @@ object OfdRequestFactory {
             )
             put(
                 "payload",
-                buildJsonObject {
-                    put(
-                        "service",
-                        buildJsonObject {
-                            put("getRegInfo", JsonPrimitive(true))
-                            put(
-                                "offlinePeriod",
-                                buildJsonObject {
-                                    put("beginTime", begin)
-                                    put("endTime", end)
-                                }
-                            )
-                            put(
-                                "securityStats",
-                                buildJsonObject {
-                                    put(
-                                        "geoPosition",
-                                        buildJsonObject {
-                                            put("latitude", JsonPrimitive(serviceInfo.geoLatitude))
-                                            put("longitude", JsonPrimitive(serviceInfo.geoLongitude))
-                                            put("source", JsonPrimitive(serviceInfo.geoSource))
-                                        }
-                                    )
-                                }
-                            )
-                            put(
-                                "regInfo",
-                                buildJsonObject {
-                                    put(
-                                        "kkm",
-                                        buildJsonObject {
-                                            put("fnsKkmId", JsonPrimitive(registrationNumber))
-                                            put("serialNumber", JsonPrimitive(factoryNumber))
-                                            put("kkmId", JsonPrimitive(systemId))
-                                        }
-                                    )
-                                    put(
-                                        "org",
-                                        buildJsonObject {
-                                            put("title", JsonPrimitive(serviceInfo.orgTitle))
-                                            put("address", JsonPrimitive(serviceInfo.orgAddress))
-                                            put("addressKz", JsonPrimitive(serviceInfo.orgAddressKz))
-                                            put("inn", JsonPrimitive(serviceInfo.orgInn))
-                                            put("okved", JsonPrimitive(serviceInfo.orgOkved))
-                                        }
-                                    )
-                                }
-                            )
-                        }
-                    )
-                }
+                buildJsonObject { put("service", servicePayload) }
             )
         }
     }
@@ -114,7 +129,8 @@ object OfdRequestFactory {
         deviceId: Long,
         token: Long,
         reqNum: Int,
-        request: ReceiptRequest
+        request: ReceiptRequest,
+        serviceBlock: JsonObject? = null
     ): JsonObject {
         val now = toDateTime(System.currentTimeMillis())
         val operationCode = when (request.operation) {
@@ -139,6 +155,7 @@ object OfdRequestFactory {
             put(
                 "payload",
                 buildJsonObject {
+                    serviceBlock?.let { put("service", it) }
                     put(
                         "ticket",
                         buildJsonObject {
@@ -435,6 +452,385 @@ object OfdRequestFactory {
         }
     }
 
+    fun buildMoneyPlacementRequest(
+        ofdId: String,
+        protocolVersion: String,
+        deviceId: Long,
+        token: Long,
+        reqNum: Int,
+        docType: String,
+        amountBills: Long,
+        createdAtMillis: Long,
+        serviceBlock: JsonObject
+    ): JsonObject {
+        val operation = when (docType) {
+            "CASH_IN" -> "MONEY_PLACEMENT_DEPOSIT"
+            "CASH_OUT" -> "MONEY_PLACEMENT_WITHDRAWAL"
+            else -> "MONEY_PLACEMENT_DEPOSIT"
+        }
+        return buildJsonObject {
+            put("ofdId", JsonPrimitive(ofdId))
+            put("protocolVersion", JsonPrimitive(protocolVersion))
+            put("messageType", JsonPrimitive("REQUEST"))
+            put("commandType", JsonPrimitive("COMMAND_MONEY_PLACEMENT"))
+            put(
+                "header",
+                buildJsonObject {
+                    put("deviceId", JsonPrimitive(deviceId))
+                    put("token", JsonPrimitive(token))
+                    put("reqNum", JsonPrimitive(reqNum))
+                }
+            )
+            put(
+                "payload",
+                buildJsonObject {
+                    put("service", serviceBlock)
+                    put(
+                        "moneyPlacement",
+                        buildJsonObject {
+                            put("dateTime", toDateTime(createdAtMillis))
+                            put("operation", JsonPrimitive(operation))
+                            put("sum", moneyObject(amountBills, 0))
+                            put(
+                                "operator",
+                                buildJsonObject {
+                                    put("code", JsonPrimitive(1))
+                                    put("name", JsonPrimitive("Оператор"))
+                                }
+                            )
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+    fun buildReportRequest(
+        ofdId: String,
+        protocolVersion: String,
+        deviceId: Long,
+        token: Long,
+        reqNum: Int,
+        reportType: String,
+        zxReport: ZxReportBuilder.ZxReportInput,
+        serviceBlock: JsonObject
+    ): JsonObject {
+        val ofdIdNorm = ofdId.lowercase()
+        return buildJsonObject {
+            put("ofdId", JsonPrimitive(ofdIdNorm))
+            put("protocolVersion", JsonPrimitive(protocolVersion))
+            put("messageType", JsonPrimitive("REQUEST"))
+            put("commandType", JsonPrimitive("COMMAND_REPORT"))
+            put(
+                "header",
+                buildJsonObject {
+                    put("deviceId", JsonPrimitive(deviceId))
+                    put("token", JsonPrimitive(token))
+                    put("reqNum", JsonPrimitive(reqNum))
+                }
+            )
+            put(
+                "payload",
+                buildJsonObject {
+                    put("service", serviceBlock)
+                    put(
+                        "report",
+                        buildJsonObject {
+                            put("reportType", JsonPrimitive(reportType))
+                            put("dateTime", toDateTime(zxReport.dateTimeMillis))
+                            put("isOffline", JsonPrimitive(false))
+                            put(
+                                "zxReport",
+                                buildZxReportInternal(zxReport)
+                            )
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+    fun buildCloseShiftRequest(
+        ofdId: String,
+        protocolVersion: String,
+        deviceId: Long,
+        token: Long,
+        reqNum: Int,
+        closeTimeMillis: Long,
+        frShiftNumber: Int,
+        zxReport: JsonObject,
+        serviceBlock: JsonObject
+    ): JsonObject {
+        val ofdIdNorm = ofdId.lowercase()
+        return buildJsonObject {
+            put("ofdId", JsonPrimitive(ofdIdNorm))
+            put("protocolVersion", JsonPrimitive(protocolVersion))
+            put("messageType", JsonPrimitive("REQUEST"))
+            put("commandType", JsonPrimitive("COMMAND_CLOSE_SHIFT"))
+            put(
+                "header",
+                buildJsonObject {
+                    put("deviceId", JsonPrimitive(deviceId))
+                    put("token", JsonPrimitive(token))
+                    put("reqNum", JsonPrimitive(reqNum))
+                }
+            )
+            put(
+                "payload",
+                buildJsonObject {
+                    put("service", serviceBlock)
+                    put(
+                        "closeShift",
+                        buildJsonObject {
+                            put("closeTime", toDateTime(closeTimeMillis))
+                            put("isOffline", JsonPrimitive(false))
+                            put("frShiftNumber", JsonPrimitive(frShiftNumber))
+                            put("withdrawMoney", JsonPrimitive(false))
+                            put("operator", buildJsonObject {
+                                put("code", JsonPrimitive(1))
+                                put("name", JsonPrimitive("Оператор"))
+                            })
+                            put("zReport", zxReport)
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+    fun buildZxReportInternal(zx: ZxReportBuilder.ZxReportInput): JsonObject {
+        val base = buildJsonObject {
+            put("dateTime", toDateTime(zx.dateTimeMillis))
+            put("openShiftTime", toDateTime(zx.openShiftTimeMillis))
+            zx.closeShiftTimeMillis?.let { put("closeShiftTime", toDateTime(it)) }
+            put("shiftNumber", JsonPrimitive(zx.shiftNumber))
+            put("cashSum", moneyObject(zx.cashSumBills, 0))
+            put(
+                "revenue",
+                buildJsonObject {
+                    put("sum", moneyObject(kotlin.math.abs(zx.revenueBills), kotlin.math.abs(zx.revenueCoins)))
+                    put("isNegative", JsonPrimitive(zx.revenueBills < 0 || zx.revenueCoins < 0))
+                }
+            )
+            put(
+                "startShiftNonNullableSums",
+                buildJsonArray {
+                    zx.startShiftNonNullableSums.forEach { (op, sum) ->
+                        add(
+                            buildJsonObject {
+                                put("operation", JsonPrimitive(op))
+                                put("sum", moneyObject(sum, 0))
+                            }
+                        )
+                    }
+                }
+            )
+            put(
+                "nonNullableSums",
+                buildJsonArray {
+                    zx.nonNullableSums.forEach { (op, sum) ->
+                        add(
+                            buildJsonObject {
+                                put("operation", JsonPrimitive(op))
+                                put("sum", moneyObject(sum, 0))
+                            }
+                        )
+                    }
+                }
+            )
+            put(
+                "operations",
+                buildJsonArray {
+                    zx.operations.forEach { op ->
+                        add(
+                            buildJsonObject {
+                                put("operation", JsonPrimitive(op.operation))
+                                put("count", JsonPrimitive(op.count.toInt()))
+                                put("sum", moneyObject(op.sumBills, 0))
+                            }
+                        )
+                    }
+                }
+            )
+            put(
+                "sections",
+                buildJsonArray {
+                    zx.sections.forEach { section ->
+                        add(
+                            buildJsonObject {
+                                put("sectionCode", JsonPrimitive(section.sectionCode))
+                                put(
+                                    "operations",
+                                    buildJsonArray {
+                                        section.operations.forEach { op ->
+                                            add(
+                                                buildJsonObject {
+                                                    put("operation", JsonPrimitive(op.operation))
+                                                    put("count", JsonPrimitive(op.count.toInt()))
+                                                    put("sum", moneyObject(op.sumBills, 0))
+                                                }
+                                            )
+                                        }
+                                    }
+                                )
+                            }
+                        )
+                    }
+                }
+            )
+            put(
+                "discounts",
+                buildJsonArray {
+                    zx.discounts.forEach { op ->
+                        add(
+                            buildJsonObject {
+                                put("operation", JsonPrimitive(op.operation))
+                                put("count", JsonPrimitive(op.count.toInt()))
+                                put("sum", moneyObject(op.sumBills, 0))
+                            }
+                        )
+                    }
+                }
+            )
+            put(
+                "markups",
+                buildJsonArray {
+                    zx.markups.forEach { op ->
+                        add(
+                            buildJsonObject {
+                                put("operation", JsonPrimitive(op.operation))
+                                put("count", JsonPrimitive(op.count.toInt()))
+                                put("sum", moneyObject(op.sumBills, 0))
+                            }
+                        )
+                    }
+                }
+            )
+            put(
+                "totalResult",
+                buildJsonArray {
+                    zx.totalResult.forEach { op ->
+                        add(
+                            buildJsonObject {
+                                put("operation", JsonPrimitive(op.operation))
+                                put("count", JsonPrimitive(op.count.toInt()))
+                                put("sum", moneyObject(op.sumBills, 0))
+                            }
+                        )
+                    }
+                }
+            )
+            put(
+                "ticketOperations",
+                buildJsonArray {
+                    zx.ticketOperations.forEach { t ->
+                        add(
+                            buildJsonObject {
+                                put("operation", JsonPrimitive(t.operation))
+                                put("ticketsTotalCount", JsonPrimitive(t.ticketsTotalCount.toInt()))
+                                put("ticketsCount", JsonPrimitive(t.ticketsCount.toInt()))
+                                put("ticketsSum", moneyObject(t.ticketsSumBills, 0))
+                                put(
+                                    "payments",
+                                    buildJsonArray {
+                                        t.payments.forEach { p ->
+                                            add(
+                                                buildJsonObject {
+                                                    put("payment", JsonPrimitive(p.payment))
+                                                    put("sum", moneyObject(p.sumBills, 0))
+                                                    put("count", JsonPrimitive(p.count.toInt()))
+                                                }
+                                            )
+                                        }
+                                    }
+                                )
+                                put("offlineCount", JsonPrimitive(t.offlineCount.toInt()))
+                                put("discountSum", moneyObject(t.discountSumBills, 0))
+                                put("markupSum", moneyObject(t.markupSumBills, 0))
+                                put("changeSum", moneyObject(t.changeSumBills, 0))
+                            }
+                        )
+                    }
+                }
+            )
+            put(
+                "moneyPlacements",
+                buildJsonArray {
+                    zx.moneyPlacements.forEach { m ->
+                        add(
+                            buildJsonObject {
+                                put("operation", JsonPrimitive(m.operation))
+                                put("operationsTotalCount", JsonPrimitive(m.operationsTotalCount.toInt()))
+                                put("operationsCount", JsonPrimitive(m.operationsCount.toInt()))
+                                put("operationsSum", moneyObject(m.operationsSumBills, 0))
+                                put("offlineCount", JsonPrimitive(m.offlineCount.toInt()))
+                            }
+                        )
+                    }
+                }
+            )
+            put(
+                "taxes",
+                buildJsonArray {
+                    zx.taxes.forEach { tax ->
+                        add(
+                            buildJsonObject {
+                                put("taxType", JsonPrimitive(tax.taxType))
+                                put("taxTypeCode", JsonPrimitive(tax.taxTypeCode))
+                                put("percent", JsonPrimitive(tax.percent))
+                                put(
+                                    "operations",
+                                    buildJsonArray {
+                                        tax.operations.forEach { op ->
+                                            add(
+                                                buildJsonObject {
+                                                    put("operation", JsonPrimitive(op.operation))
+                                                    put(
+                                                        "turnover",
+                                                        moneyObject(op.turnoverBills, 0)
+                                                    )
+                                                    put(
+                                                        "turnoverWithoutTax",
+                                                        moneyObject(op.turnoverWithoutTaxBills, 0)
+                                                    )
+                                                    put(
+                                                        "sum",
+                                                        moneyObject(op.taxSumBills, 0)
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
+                                )
+                            }
+                        )
+                    }
+                }
+            )
+        }
+
+        val checksum = calculateZxReportChecksum(base)
+
+        return JsonObject(
+            base.toMutableMap().apply {
+                put("checksum", JsonPrimitive(checksum))
+            }
+        )
+    }
+
+    private fun calculateZxReportChecksum(zxJson: JsonObject): String {
+        val jsonString = buildJsonObject {
+            // Embed zxReport under a fixed key to keep structure stable if needed.
+            put("zxReport", zxJson)
+        }.toString()
+        val crc32 = CRC32()
+        val bytes = jsonString.toByteArray(Charsets.UTF_8)
+        crc32.update(bytes, 0, bytes.size)
+        return java.lang.Long.toHexString(crc32.value)
+            .padStart(8, '0')
+            .uppercase()
+    }
+
     private fun taxTypeForGroup(group: VatGroup): String {
         return when (group) {
             VatGroup.NO_VAT -> "TAX_TYPE_NO_VAT"
@@ -470,7 +866,7 @@ object OfdRequestFactory {
     }
 
     private fun toDateTime(epochMillis: Long): JsonObject {
-        val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), ZoneOffset.UTC)
+        val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), ZoneId.systemDefault())
         return buildJsonObject {
             put(
                 "date",

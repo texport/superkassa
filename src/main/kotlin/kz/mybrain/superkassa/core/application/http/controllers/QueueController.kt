@@ -35,7 +35,7 @@ class QueueController(
     /**
      * Получить список задач очереди ОФД по ККМ.
      *
-     * Возвращает элементы online/offline очереди с их статусами.
+     * Возвращает элементы offline-очереди с их статусами.
      */
     @GetMapping
     @Operation(
@@ -44,7 +44,7 @@ class QueueController(
             Возвращает список задач очереди ОФД для указанной ККМ.
             
             Что показывает:
-            - lane: ONLINE или OFFLINE
+            - lane: OFFLINE
             - type: тип команды (TICKET, REPORT_X, CLOSE_SHIFT, MONEY_PLACEMENT и т.п.)
             - status: текущий статус (PENDING, IN_PROGRESS, SENT, FAILED)
             - attempt: количество попыток отправки

@@ -131,7 +131,7 @@ class KkmManagementController(private val kkmService: KkmService) {
             Ограничения:
             - ККМ должна быть в режиме программирования (PROGRAMMING)
             - Не должно быть открытой смены
-            - Очереди online/offline должны быть пусты (нет неотправленных данных)
+            - Offline-очередь должна быть пуста (нет неотправленных данных)
             - Требуются права администратора (ADMIN)
             - PIN администратора передается в заголовке Authorization (Bearer <pin> или просто <pin>)
         """

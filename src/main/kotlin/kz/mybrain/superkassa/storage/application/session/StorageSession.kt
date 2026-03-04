@@ -11,6 +11,8 @@ import kz.mybrain.superkassa.storage.domain.repository.KkmUserRepository
 import kz.mybrain.superkassa.storage.domain.repository.OfdMessageRepository
 import kz.mybrain.superkassa.storage.domain.repository.OfflineQueueRepository
 import kz.mybrain.superkassa.storage.domain.repository.OutboxEventRepository
+import kz.mybrain.superkassa.storage.domain.repository.QueueLockRepository
+import kz.mybrain.superkassa.storage.domain.repository.QueueTaskRepository
 import kz.mybrain.superkassa.storage.domain.repository.ShiftRepository
 
 /**
@@ -28,6 +30,8 @@ interface StorageSession : AutoCloseable {
     val users: KkmUserRepository
     val ofdMessages: OfdMessageRepository
     val offlineQueue: OfflineQueueRepository
+    val queueTask: QueueTaskRepository
+    val queueLock: QueueLockRepository
     val idempotency: IdempotencyRepository
     val locks: CashboxLockRepository
     val shifts: ShiftRepository

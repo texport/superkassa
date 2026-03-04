@@ -2,8 +2,10 @@ package kz.mybrain.superkassa.core.application.service
 
 import kz.mybrain.superkassa.core.application.error.ConflictException
 import kz.mybrain.superkassa.core.application.error.ErrorMessages
+import kz.mybrain.superkassa.core.domain.model.DeliveryStatus
 import kz.mybrain.superkassa.core.domain.model.KkmInfo
 import kz.mybrain.superkassa.core.domain.model.OfdCommandResult
+import kz.mybrain.superkassa.core.domain.model.OfdCommandStatus
 import kz.mybrain.superkassa.core.domain.model.OfdCommandType
 import kz.mybrain.superkassa.core.domain.model.ReceiptRequest
 import kz.mybrain.superkassa.core.domain.model.UserRole
@@ -47,7 +49,7 @@ class FiscalOperationExecutor(
         saveOperation: (String, Long, String) -> Unit, // documentId, now, shiftId
         sendOfdCommand: (KkmInfo, String) -> OfdCommandResult, // kkm, documentId -> result
         processResult: (KkmInfo, String, String, OfdCommandResult, OfdCommandType, Long, Pair<ReceiptRequest, String>?) -> Unit,
-        buildResult: (String, OfdCommandResult) -> T,
+        buildResult: (String, OfdCommandResult, DeliveryStatus) -> T,
         receiptContextProvider: ((String) -> Pair<ReceiptRequest, String>?)? = null
     ): T {
         return storage.inTransaction {
@@ -66,8 +68,8 @@ class FiscalOperationExecutor(
                 )
                 // Для идемпотентности возвращаем результат с существующим documentId
                 // Создаем пустой OfdCommandResult, так как реальные данные уже сохранены
-                val emptyResult = kz.mybrain.superkassa.core.domain.model.OfdCommandResult(
-                    status = kz.mybrain.superkassa.core.domain.model.OfdCommandStatus.OK,
+                val emptyResult = OfdCommandResult(
+                    status = OfdCommandStatus.OK,
                     responseBin = null,
                     responseJson = null,
                     responseToken = null,
@@ -78,8 +80,9 @@ class FiscalOperationExecutor(
                     fiscalSign = null,
                     autonomousSign = null
                 )
+                val status = DeliveryStatus.ONLINE_OK
                 @Suppress("UNCHECKED_CAST")
-                return@inTransaction buildResult(existing, emptyResult) as T
+                return@inTransaction buildResult(existing, emptyResult, status) as T
             }
 
             storage.insertIdempotency(kkmId, idempotencyKey, operationType)
@@ -107,11 +110,18 @@ class FiscalOperationExecutor(
             // Обработка результата
             processResult(kkm, documentId, kkmId, ofdResult, commandType, now, receiptContext)
 
+            // Определяем статус доставки для клиента
+            val deliveryStatus = when (ofdResult.status) {
+                OfdCommandStatus.OK -> DeliveryStatus.ONLINE_OK
+                OfdCommandStatus.TIMEOUT -> DeliveryStatus.OFFLINE_QUEUED
+                OfdCommandStatus.FAILED -> DeliveryStatus.ONLINE_ERROR
+            }
+
             // Обновление идемпотентности
             storage.updateIdempotencyResponse(kkmId, idempotencyKey, documentId)
 
             // Построение результата
-            buildResult(documentId, ofdResult)
+            buildResult(documentId, ofdResult, deliveryStatus)
         }
     }
 

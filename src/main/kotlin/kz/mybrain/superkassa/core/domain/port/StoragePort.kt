@@ -6,6 +6,7 @@ import kz.mybrain.superkassa.core.domain.model.KkmInfo
 import kz.mybrain.superkassa.core.domain.model.Money
 import kz.mybrain.superkassa.core.domain.model.KkmUser
 import kz.mybrain.superkassa.core.domain.model.UserRole
+import kz.mybrain.superkassa.core.domain.model.QueueTaskDto
 import kz.mybrain.superkassa.core.domain.model.ReceiptRequest
 import kz.mybrain.superkassa.core.domain.model.ShiftInfo
 import kz.mybrain.superkassa.core.domain.model.ShiftStatus
@@ -63,9 +64,28 @@ interface StoragePort {
      */
     fun deleteKkm(id: String): Boolean
     /**
-     * Проверяет наличие автономной очереди по кассе.
+     * Проверяет наличие автономной очереди по кассе (queue_task, lane=OFFLINE).
+     * @deprecated Используйте OfflineQueuePort.canSendDirectly — offline queue единственный источник истины.
      */
     fun hasOfflineQueue(kkmId: String): Boolean
+    /**
+     * Очередь команд (queue_task) — доступ только через storage.
+     */
+    fun enqueueQueueTask(dto: QueueTaskDto): Boolean
+    fun listQueueTasksByCashbox(cashboxId: String, lane: String, limit: Int, offset: Int = 0): List<QueueTaskDto>
+    fun nextPendingQueueTask(cashboxId: String, lane: String, now: Long): QueueTaskDto?
+    fun updateQueueTaskStatus(
+        id: String,
+        status: String,
+        attempt: Int,
+        lastError: String?,
+        nextAttemptAt: Long?
+    ): Boolean
+    fun markQueueTaskInProgress(id: String, now: Long): Boolean
+    fun deleteQueueTasksByCashbox(cashboxId: String): Boolean
+    fun tryAcquireQueueLock(cashboxId: String, ownerId: String, leaseUntil: Long, acquiredAt: Long): Boolean
+    fun renewQueueLock(cashboxId: String, ownerId: String, leaseUntil: Long, now: Long): Boolean
+    fun releaseQueueLock(cashboxId: String, ownerId: String): Boolean
     /**
      * Полностью удаляет кассу и все связанные данные.
      */
@@ -207,7 +227,7 @@ interface StoragePort {
     fun countClosedShifts(): Long
 
     /**
-     * Количество записей в автономной очереди (по всем кассам).
+     * Количество неотправленных команд в OFFLINE-очереди (queue_task).
      */
     fun countOfflineQueue(): Long
 

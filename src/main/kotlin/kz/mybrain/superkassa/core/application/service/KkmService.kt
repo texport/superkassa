@@ -15,9 +15,7 @@ import kz.mybrain.superkassa.core.application.error.ErrorMessages
 import kz.mybrain.superkassa.core.application.error.ForbiddenException
 import kz.mybrain.superkassa.core.application.error.NotFoundException
 import kz.mybrain.superkassa.core.application.error.ValidationException
-import kz.mybrain.superkassa.core.application.model.DraftKkmRequest
-import kz.mybrain.superkassa.core.application.model.DraftKkmResponse
-import kz.mybrain.superkassa.core.application.model.KkmDraftUpdateRequest
+import kz.mybrain.superkassa.core.application.model.FactoryNumberResponse
 import kz.mybrain.superkassa.core.application.model.KkmInitDirectRequest
 import kz.mybrain.superkassa.core.application.model.KkmInitDraftRequest
 import kz.mybrain.superkassa.core.application.model.KkmListParams
@@ -34,6 +32,7 @@ import kz.mybrain.superkassa.core.domain.model.CashOperationRequest
 import kz.mybrain.superkassa.core.domain.model.CashOperationResult
 import kz.mybrain.superkassa.core.domain.model.CashOperationType
 import kz.mybrain.superkassa.core.domain.model.Money
+import kz.mybrain.superkassa.core.domain.model.DeliveryStatus
 import kz.mybrain.superkassa.core.domain.model.CounterSnapshot
 import kz.mybrain.superkassa.core.domain.model.KkmInfo
 import kz.mybrain.superkassa.core.domain.model.KkmMode
@@ -43,7 +42,7 @@ import kz.mybrain.superkassa.core.domain.model.OfdCommandRequest
 import kz.mybrain.superkassa.core.domain.model.OfdCommandResult
 import kz.mybrain.superkassa.core.domain.model.OfdCommandStatus
 import kz.mybrain.superkassa.core.domain.model.OfdCommandType
-import kz.mybrain.superkassa.core.domain.model.QueueCommandRequest
+import kz.mybrain.superkassa.core.domain.model.OfflineQueueCommandRequest
 import kz.mybrain.superkassa.core.domain.model.ReceiptRequest
 import kz.mybrain.superkassa.core.domain.model.ReceiptResult
 import kz.mybrain.superkassa.core.domain.model.FiscalDocumentSnapshot
@@ -65,7 +64,7 @@ import kz.mybrain.superkassa.core.domain.port.IdGenerator
 import kz.mybrain.superkassa.core.domain.port.OfdConfigPort
 import kz.mybrain.superkassa.core.domain.port.OfdManagerPort
 import kz.mybrain.superkassa.core.domain.port.PinHasherPort
-import kz.mybrain.superkassa.core.domain.port.QueuePort
+import kz.mybrain.superkassa.core.domain.port.OfflineQueuePort
 import kz.mybrain.superkassa.core.domain.port.ReceiptRenderPort
 import kz.mybrain.superkassa.core.domain.port.StoragePort
 import org.slf4j.LoggerFactory
@@ -73,7 +72,7 @@ import org.slf4j.LoggerFactory
 /** Основной сервис ККМ: чеки, смены, отчеты, настройки. */
 class KkmService(
         private val storage: StoragePort,
-        private val queue: QueuePort,
+        private val queue: OfflineQueuePort,
         private val ofd: OfdManagerPort,
         private val ofdConfig: OfdConfigPort,
         private val delivery: DeliveryPort,
@@ -102,9 +101,6 @@ class KkmService(
     private val registeredState = KkmState.ACTIVE.name
 
     /** Делегирование методов регистрации ККМ в KkmRegistrationService */
-    fun initDraftKkm(pin: String, request: KkmInitDraftRequest): KkmInfo =
-        kkmRegistrationService.initDraftKkm(pin, request)
-
     fun initKkm(pin: String, request: KkmInitDirectRequest): KkmInfo =
         kkmRegistrationService.initKkm(pin, request)
 
@@ -114,8 +110,8 @@ class KkmService(
     ): KkmInfo =
         kkmRegistrationService.initKkmSimple(pin, request)
 
-    fun createDraftKkm(pin: String, request: DraftKkmRequest): DraftKkmResponse =
-        kkmRegistrationService.createDraftKkm(pin, request)
+    fun generateFactoryInfo(): FactoryNumberResponse =
+        kkmRegistrationService.generateFactoryInfo()
 
     /**
      * Возвращает ККМ по идентификатору.
@@ -163,8 +159,10 @@ class KkmService(
      * @throws ForbiddenException Если ПИН-код не подходит.
      */
     fun deleteKkm(id: String, pin: String): Boolean {
-        requireRole(id, pin, setOf(UserRole.ADMIN))
+        // Сначала убеждаемся, что касса существует, чтобы при несуществующей кассе
+        // вернуть "KKM_NOT_FOUND", а не ошибку про отсутствие пользователя с таким ПИН.
         val kkm = requireKkm(id)
+        requireRole(kkm.id, pin, setOf(UserRole.ADMIN))
         if (kkm.state != KkmState.PROGRAMMING.name) {
             throw ValidationException(
                     ErrorMessages.kkmDeleteRequiresProgramming(),
@@ -175,7 +173,7 @@ class KkmService(
         if (openShift != null) {
             throw ConflictException(ErrorMessages.kkmDeleteShiftOpen(), "KKM_DELETE_SHIFT_OPEN")
         }
-        if (queue.hasQueuedCommands(id) || storage.hasOfflineQueue(id)) {
+        if (!queue.canSendDirectly(id)) {
             throw ConflictException(
                     ErrorMessages.kkmDeleteQueueNotEmpty(),
                     "KKM_DELETE_QUEUE_NOT_EMPTY"
@@ -372,7 +370,7 @@ class KkmService(
      * Разрешено только:
      * - в режиме программирования (PROGRAMMING),
      * - при отсутствии открытой смены,
-     * - при пустых online/offline очередях.
+     * - при пустой offline-очереди.
      */
     fun updateTaxSettings(
         kkmId: String,
@@ -396,7 +394,7 @@ class KkmService(
                 "KKM_TAX_SETTINGS_SHIFT_OPEN"
             )
         }
-        if (queue.hasQueuedCommands(kkmId) || storage.hasOfflineQueue(kkmId)) {
+        if (!queue.canSendDirectly(kkmId)) {
             throw ConflictException(
                 ErrorMessages.kkmDeleteQueueNotEmpty(),
                 "KKM_TAX_SETTINGS_QUEUE_NOT_EMPTY"
@@ -412,9 +410,6 @@ class KkmService(
         storage.updateKkm(updated)
         return updated
     }
-
-    fun updateDraftKkm(kkmId: String, pin: String, request: KkmDraftUpdateRequest): KkmInfo =
-        kkmRegistrationService.updateDraftKkm(kkmId, pin, request)
 
     fun enterProgramming(kkmId: String, pin: String): KkmInfo {
         return storage.inTransaction {
@@ -497,7 +492,15 @@ class KkmService(
                 storage.saveReceipt(requestWithTaxSettings, documentId, shiftId, now)
             },
             sendOfdCommand = { currentKkm, documentId ->
-                if (queue.hasQueuedCommands(requestWithTaxSettings.kkmId) || storage.hasOfflineQueue(requestWithTaxSettings.kkmId)) {
+                val hasQueue = !queue.canSendDirectly(requestWithTaxSettings.kkmId)
+                val command = OfflineQueueCommandRequest(
+                    kkmId = requestWithTaxSettings.kkmId,
+                    type = OfdCommandType.TICKET.value,
+                    payloadRef = documentId
+                )
+                if (hasQueue) {
+                    // Автономный режим: кладём команду в offline-очередь (воркер рассылает)
+                    queue.enqueueOffline(command)
                     ofdResultQueuedOffline()
                 } else {
                     sendOfdCommand(
@@ -624,13 +627,15 @@ class KkmService(
                 }
                 }
             },
-            buildResult = { documentId, ofdResult ->
+            buildResult = { documentId, ofdResult, deliveryStatus ->
                 val doc = storage.findFiscalDocumentById(documentId)
                 ReceiptResult(
                     documentId = documentId,
                     fiscalSign = doc?.fiscalSign ?: ofdResult.fiscalSign,
                     autonomousSign = doc?.autonomousSign ?: ofdResult.autonomousSign,
-                    deliveryPayload = ofdResult.responseBin
+                    deliveryPayload = ofdResult.responseBin,
+                    deliveryStatus = deliveryStatus,
+                    deliveryError = ofdResult.errorMessage
                 )
             },
             receiptContextProvider = { shiftId -> Pair(requestWithTaxSettings, shiftId) }
@@ -685,21 +690,35 @@ class KkmService(
             val kkm = requireKkm(kkmId)
             requireOperational(kkm, allowExpiredShift = true)
             requireRole(kkm.id, pin, setOf(UserRole.ADMIN, UserRole.CASHIER))
+
             val documentId = idGenerator.nextId()
-            val hasQueue = queue.hasQueuedCommands(kkmId) || storage.hasOfflineQueue(kkmId)
-            val command = QueueCommandRequest(
-                kkmId = kkmId,
-                type = OfdCommandType.REPORT.value,
-                payloadRef = documentId
-            )
+            val hasQueue = !queue.canSendDirectly(kkmId)
             if (hasQueue) {
-                // По протоколу ОФД (п. 5.2) REPORT при наличии OFFLINE-очереди работает как OFFLINE:
-                // не отправляем сразу, помещаем в автономную линию.
+                // Есть офлайн-очередь — отчет будет доставлен позже
+                val command = OfflineQueueCommandRequest(
+                    kkmId = kkmId,
+                    type = OfdCommandType.REPORT.value,
+                    payloadRef = documentId
+                )
                 queue.enqueueOffline(command)
+                ReportResult(
+                    documentId = documentId,
+                    deliveryStatus = DeliveryStatus.OFFLINE_QUEUED
+                )
             } else {
-                queue.enqueueOnline(command)
+                // Пытаемся отправить отчет онлайн
+                val result = ofdSyncService.sendFiscalCommand(kkmId, OfdCommandType.REPORT, documentId)
+                val (status, error) = when (result.status) {
+                    OfdCommandStatus.OK -> DeliveryStatus.ONLINE_OK to null
+                    OfdCommandStatus.TIMEOUT -> DeliveryStatus.OFFLINE_QUEUED to result.errorMessage
+                    OfdCommandStatus.FAILED -> DeliveryStatus.ONLINE_ERROR to result.errorMessage
+                }
+                ReportResult(
+                    documentId = documentId,
+                    deliveryStatus = status,
+                    deliveryError = error
+                )
             }
-            ReportResult(documentId = documentId)
         }
     }
 
@@ -818,9 +837,23 @@ class KkmService(
                     shiftId = shiftId,
                     createdAt = now
                 )
+                // Обновляем кассовые счетчики по факту изменения наличности.
+                updateCashSumForOperation(
+                    kkmId = kkmId,
+                    shiftId = shiftId,
+                    type = type,
+                    amountBills = amountMoney.bills
+                )
             },
             sendOfdCommand = { kkm, documentId ->
-                if (queue.hasQueuedCommands(kkmId) || storage.hasOfflineQueue(kkmId)) {
+                val hasQueue = !queue.canSendDirectly(kkmId)
+                val command = OfflineQueueCommandRequest(
+                    kkmId = kkmId,
+                    type = OfdCommandType.MONEY_PLACEMENT.value,
+                    payloadRef = documentId
+                )
+                if (hasQueue) {
+                    queue.enqueueOffline(command)
                     ofdResultQueuedOffline()
                 } else {
                     sendOfdCommand(
@@ -840,9 +873,16 @@ class KkmService(
                     now = now,
                     receiptContext = null
                 )
+                // Обновляем счетчики операций внесения/изъятия (money_placements) с учетом офлайн-статуса.
+                val isOffline = ofdResult.status == OfdCommandStatus.TIMEOUT
+                updateMoneyPlacementCountersFromDocument(documentId, isOffline)
             },
-            buildResult = { documentId, _ ->
-                CashOperationResult(documentId = documentId)
+            buildResult = { documentId, ofdResult, deliveryStatus ->
+                CashOperationResult(
+                    documentId = documentId,
+                    deliveryStatus = deliveryStatus,
+                    deliveryError = ofdResult.errorMessage
+                )
             }
         )
     }
@@ -997,7 +1037,7 @@ class KkmService(
             isAutonomous = true
         )
         queue.enqueueOffline(
-            QueueCommandRequest(
+            OfflineQueueCommandRequest(
                 kkmId = kkmId,
                 type = commandType.value,
                 payloadRef = documentId
@@ -1036,9 +1076,71 @@ class KkmService(
 
     private fun clearAutonomousIfReady(kkm: KkmInfo, now: Long) {
         if (kkm.autonomousSince == null && kkm.state != KkmState.BLOCKED.name) return
-        if (queue.hasQueuedCommands(kkm.id) || storage.hasOfflineQueue(kkm.id)) return
+        if (!queue.canSendDirectly(kkm.id)) return
         val nextState = if (kkm.state == KkmState.BLOCKED.name) KkmState.ACTIVE.name else kkm.state
         storage.updateKkm(kkm.copy(updatedAt = now, autonomousSince = null, state = nextState))
+    }
+
+    /**
+     * Обновляет счетчик наличных в кассе (CASH_SUM) для смены и глобально
+     * по факту выполнения операции внесения/изъятия.
+     */
+    private fun updateCashSumForOperation(
+        kkmId: String,
+        shiftId: String,
+        type: CashOperationType,
+        amountBills: Long
+    ) {
+        if (amountBills == 0L) return
+        val delta = when (type) {
+            CashOperationType.CASH_IN -> amountBills
+            CashOperationType.CASH_OUT -> -amountBills
+        }
+        fun update(scope: String, scopeShiftId: String?) {
+            val current = storage.loadCounters(kkmId, scope, scopeShiftId)[CounterKeyFormats.CASH_SUM] ?: 0L
+            val next = current + delta
+            storage.upsertCounter(kkmId, scope, scopeShiftId, CounterKeyFormats.CASH_SUM, next)
+        }
+        update(CounterScopes.SHIFT, shiftId)
+        update(CounterScopes.GLOBAL, null)
+    }
+
+    /**
+     * Обновляет счетчики MONEY_PLACEMENT_* по данным сохраненного документа внесения/изъятия.
+     *
+     * @param documentId ID фискального документа операции cash in/out.
+     * @param isOffline true, если документ ушел в офлайн-очередь (TIMEOUT/автономный режим).
+     */
+    private fun updateMoneyPlacementCountersFromDocument(documentId: String, isOffline: Boolean) {
+        val snapshot = storage.findFiscalDocumentById(documentId) ?: return
+        val shiftId = snapshot.shiftId
+        if (shiftId.isBlank()) return
+        val kkmId = snapshot.cashboxId
+        val amount = snapshot.totalAmount ?: 0L
+        if (amount == 0L) return
+
+        val opKey = when (snapshot.docType) {
+            CashOperationType.CASH_IN.name -> "MONEY_PLACEMENT_DEPOSIT"
+            CashOperationType.CASH_OUT.name -> "MONEY_PLACEMENT_WITHDRAWAL"
+            else -> return
+        }
+
+        fun increment(scope: String, scopeShiftId: String?, key: String, delta: Long) {
+            val current = storage.loadCounters(kkmId, scope, scopeShiftId)[key] ?: 0L
+            storage.upsertCounter(kkmId, scope, scopeShiftId, key, current + delta)
+        }
+
+        fun updateScope(scope: String, scopeShiftId: String?) {
+            increment(scope, scopeShiftId, CounterKeyFormats.MONEY_PLACEMENT_TOTAL_COUNT.format(opKey), 1L)
+            increment(scope, scopeShiftId, CounterKeyFormats.MONEY_PLACEMENT_COUNT.format(opKey), 1L)
+            increment(scope, scopeShiftId, CounterKeyFormats.MONEY_PLACEMENT_SUM.format(opKey), amount)
+            if (isOffline) {
+                increment(scope, scopeShiftId, CounterKeyFormats.MONEY_PLACEMENT_OFFLINE_COUNT.format(opKey), 1L)
+            }
+        }
+
+        updateScope(CounterScopes.SHIFT, shiftId)
+        updateScope(CounterScopes.GLOBAL, null)
     }
 
     private fun requireRole(kkmId: String, pin: String, allowed: Set<UserRole>) {

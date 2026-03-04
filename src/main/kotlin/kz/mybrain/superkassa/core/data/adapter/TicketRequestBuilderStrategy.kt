@@ -13,8 +13,8 @@ import kotlinx.serialization.json.JsonObject
  */
 class TicketRequestBuilderStrategy : OfdRequestBuilderStrategy {
     override fun canHandle(commandType: OfdCommandType): Boolean {
-        // Обрабатывает все команды, которые не обработаны другими стратегиями
-        return true
+        // Только TICKET; REPORT, CLOSE_SHIFT, MONEY_PLACEMENT — отдельные стратегии
+        return commandType == OfdCommandType.TICKET
     }
 
     override fun build(command: OfdCommandRequest, config: OfdConfig): JsonObject? {
@@ -32,6 +32,7 @@ class TicketRequestBuilderStrategy : OfdRequestBuilderStrategy {
                 parentTicket = null
             )
         val ofdId = command.ofdProviderId.lowercase()
+        val serviceBlock = buildServiceBlock(command)
 
         return OfdRequestFactory.buildTicketRequest(
             ofdId = ofdId,
@@ -39,7 +40,25 @@ class TicketRequestBuilderStrategy : OfdRequestBuilderStrategy {
             deviceId = command.deviceId,
             token = command.token,
             reqNum = command.reqNum,
-            request = receipt
+            request = receipt,
+            serviceBlock = serviceBlock
+        )
+    }
+
+    private fun buildServiceBlock(command: OfdCommandRequest): kotlinx.serialization.json.JsonObject? {
+        val serviceInfo = command.serviceInfo ?: return null
+        val regNo = command.registrationNumber ?: return null
+        val factoryNo = command.factoryNumber ?: return null
+        val systemId = command.ofdSystemId ?: return null
+        val begin = command.offlineBeginMillis ?: System.currentTimeMillis()
+        val end = command.offlineEndMillis ?: System.currentTimeMillis()
+        return OfdRequestFactory.buildServicePayload(
+            serviceInfo = serviceInfo,
+            registrationNumber = regNo,
+            factoryNumber = factoryNo,
+            systemId = systemId,
+            offlineBeginMillis = begin,
+            offlineEndMillis = end
         )
     }
 }

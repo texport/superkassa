@@ -15,6 +15,7 @@ repositories {
 
 dependencies {
     testImplementation(kotlin("test"))
+    testImplementation("kz.kazakhtelecom:ofd-kt-proto-v203:2.0.3")
     implementation("org.slf4j:slf4j-api:2.0.13")
     implementation("org.xerial:sqlite-jdbc:3.46.0.0")
     implementation("org.postgresql:postgresql:42.7.3")

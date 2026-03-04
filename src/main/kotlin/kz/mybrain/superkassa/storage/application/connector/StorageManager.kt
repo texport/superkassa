@@ -25,9 +25,9 @@ class StorageManager(
      */
     fun openSession(config: StorageConfig): StorageSession {
         val engine = config.resolvedEngine()
-        logger.info("Opening storage session. engine={}", engine)
+        logger.debug("Opening storage session. engine={}", engine)
         val connection = registry.connectorFor(engine).connect(config)
-        logger.info("Storage session connection opened. engine={}", engine)
+        logger.debug("Storage session connection opened. engine={}", engine)
         return sessionFactory.open(connection)
     }
 }

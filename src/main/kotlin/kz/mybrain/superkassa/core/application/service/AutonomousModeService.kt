@@ -5,7 +5,7 @@ import kz.mybrain.superkassa.core.application.error.ErrorMessages
 import kz.mybrain.superkassa.core.domain.model.KkmInfo
 import kz.mybrain.superkassa.core.domain.model.KkmState
 import kz.mybrain.superkassa.core.domain.port.ClockPort
-import kz.mybrain.superkassa.core.domain.port.QueuePort
+import kz.mybrain.superkassa.core.domain.port.OfflineQueuePort
 import kz.mybrain.superkassa.core.domain.port.StoragePort
 import org.slf4j.LoggerFactory
 
@@ -15,7 +15,7 @@ import org.slf4j.LoggerFactory
  */
 class AutonomousModeService(
     private val storage: StoragePort,
-    private val queue: QueuePort,
+    private val queue: OfflineQueuePort,
     private val clock: ClockPort,
     private val maxAutonomousDurationMs: Long = 72 * 60 * 60 * 1000L
 ) {
@@ -31,7 +31,7 @@ class AutonomousModeService(
      */
     fun enforceAutonomousLimits(kkm: KkmInfo) {
         val now = clock.now()
-        val hasQueue = queue.hasQueuedCommands(kkm.id) || storage.hasOfflineQueue(kkm.id)
+        val hasQueue = !queue.canSendDirectly(kkm.id)
         val autonomousSince = kkm.autonomousSince
 
         // Если есть очередь, но автономный режим не начат - начинаем его

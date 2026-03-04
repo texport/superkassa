@@ -10,5 +10,7 @@ data class ReceiptResult(
     val documentId: String,
     val fiscalSign: String? = null,
     val autonomousSign: String? = null,
-    val deliveryPayload: ByteArray? = null
+    val deliveryPayload: ByteArray? = null,
+    val deliveryStatus: DeliveryStatus = DeliveryStatus.NOT_SENT,
+    val deliveryError: String? = null
 )

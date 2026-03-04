@@ -5,6 +5,7 @@ import kz.mybrain.superkassa.core.domain.model.OfdCommandResult
 import kz.mybrain.superkassa.core.domain.model.OfdCommandStatus
 import kz.mybrain.superkassa.core.domain.model.OfdCommandType
 import kz.mybrain.superkassa.core.application.error.ErrorMessages
+import kz.mybrain.superkassa.core.application.error.OfdProtocolException
 import kz.mybrain.superkassa.core.data.ofd.OfdCodecService
 import kz.mybrain.superkassa.core.data.ofd.OfdConfig
 import kz.mybrain.superkassa.core.data.ofd.OfdRegistry
@@ -33,7 +34,7 @@ class OfdManagerAdapter(
     private val config: OfdConfig,
     private val codec: OfdCodecService,
     private val networkClient: OfdNetworkClient,
-    private val requestBuilders: List<OfdRequestBuilderStrategy> = defaultRequestBuilders(),
+    private val requestBuilders: List<OfdRequestBuilderStrategy>,
     /** Общее время на обработку транзакции (протокол п. 5), не менее 5 с. */
     private val timeoutSeconds: Long = 30L,
     /** Интервал задержки между попытками восстановления связи (протокол п. 5), не менее 60 с. */
@@ -48,15 +49,13 @@ class OfdManagerAdapter(
 
     companion object {
         /**
-         * Дефолтный набор стратегий построения запросов.
-         * Можно расширить, добавив новые стратегии без изменения существующего кода.
+         * Дефолтный набор стратегий (без StoragePort).
+         * Используется в тестах; в проде передаётся через конструктор.
          */
-        private fun defaultRequestBuilders(): List<OfdRequestBuilderStrategy> {
-            return listOf(
-                ServiceRequestBuilderStrategy(),
-                TicketRequestBuilderStrategy() // Должна быть последней как fallback
-            )
-        }
+        fun defaultRequestBuilders(): List<OfdRequestBuilderStrategy> = listOf(
+            ServiceRequestBuilderStrategy(),
+            TicketRequestBuilderStrategy()
+        )
     }
 
     override fun send(command: OfdCommandRequest): OfdCommandResult {
@@ -126,6 +125,19 @@ class OfdManagerAdapter(
                 resultCode = resultCode,
                 resultText = resultText,
                 errorMessage = if (status == OfdCommandStatus.OK) null else resultText
+            )
+        } catch (ex: OfdProtocolException) {
+            logger.warn(
+                "OFD protocol error for kkmId={}, commandType={}, payloadRef={}: {}",
+                command.kkmId,
+                command.commandType,
+                command.payloadRef,
+                ex.message
+            )
+            OfdCommandResult(
+                status = OfdCommandStatus.FAILED,
+                resultCode = -1,
+                errorMessage = ex.message
             )
         } catch (ex: Exception) {
             logger.error("OFD request failed", ex)

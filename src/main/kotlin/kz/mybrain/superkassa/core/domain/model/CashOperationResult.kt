@@ -7,5 +7,7 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class CashOperationResult(
-    val documentId: String
+    val documentId: String,
+    val deliveryStatus: DeliveryStatus = DeliveryStatus.NOT_SENT,
+    val deliveryError: String? = null
 )

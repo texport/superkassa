@@ -6,7 +6,7 @@ import kz.mybrain.superkassa.core.application.policy.UuidGenerator
 import kz.mybrain.superkassa.core.application.model.KkmInitDirectRequest
 import kz.mybrain.superkassa.core.application.service.KkmService
 import kz.mybrain.superkassa.core.data.adapter.DeliveryPortAdapter
-import kz.mybrain.superkassa.core.data.adapter.QueuePortAdapter
+import kz.mybrain.superkassa.core.data.adapter.OfflineQueuePortAdapter
 import kz.mybrain.superkassa.core.data.adapter.StoragePortAdapter
 import kz.mybrain.superkassa.core.domain.model.Money
 import kz.mybrain.superkassa.core.domain.model.OfdServiceInfo
@@ -25,11 +25,11 @@ import kz.mybrain.superkassa.delivery.domain.model.DeliveryChannel
 import kz.mybrain.superkassa.delivery.domain.model.DeliveryRequest
 import kz.mybrain.superkassa.delivery.domain.model.DeliveryResult
 import kz.mybrain.superkassa.delivery.domain.port.DeliveryAdapter
-import kz.mybrain.superkassa.queue.application.model.DispatchResult
-import kz.mybrain.superkassa.queue.application.service.QueueCommandHandler
-import kz.mybrain.superkassa.queue.data.inmemory.InMemoryLeaseLockPort
-import kz.mybrain.superkassa.queue.data.inmemory.InMemoryQueueStoragePort
-import kz.mybrain.superkassa.queue.domain.model.QueueStatus
+import kz.mybrain.superkassa.offline_queue.application.model.DispatchResult
+import kz.mybrain.superkassa.offline_queue.application.service.QueueCommandHandler
+import kz.mybrain.superkassa.core.data.adapter.StorageBackedLeaseLockPort
+import kz.mybrain.superkassa.core.data.adapter.StorageBackedQueueStoragePort
+import kz.mybrain.superkassa.offline_queue.domain.model.QueueStatus
 import kz.mybrain.superkassa.storage.data.bootstrap.DefaultStorageBootstrap
 import kz.mybrain.superkassa.storage.domain.config.StorageConfig
 import kotlinx.serialization.json.JsonPrimitive
@@ -48,10 +48,10 @@ class CoreIntegrationTest {
         storageBootstrap.migrate(storageConfig)
 
         val storage = StoragePortAdapter(storageBootstrap, storageConfig)
-        val queueStorage = InMemoryQueueStoragePort()
-        val queueLocks = InMemoryLeaseLockPort()
+        val queueStorage = StorageBackedQueueStoragePort(storage)
+        val queueLocks = StorageBackedLeaseLockPort(storage)
         val queueHandler = QueueCommandHandler { DispatchResult(QueueStatus.SENT) }
-        val queuePort = QueuePortAdapter(queueStorage, queueLocks, queueHandler, ownerId = "node-1")
+        val queuePort = OfflineQueuePortAdapter(queueStorage, queueLocks, queueHandler, ownerId = "node-1")
 
         val deliveryService = DeliveryService(
             listOf(
@@ -153,13 +153,6 @@ class CoreIntegrationTest {
         val reqNumService = kz.mybrain.superkassa.core.application.service.ReqNumService(
             storage = storage
         )
-        val shiftService = kz.mybrain.superkassa.core.application.service.ShiftService(
-            storage = storage,
-            queue = queuePort,
-            idGenerator = UuidGenerator,
-            clock = SystemClock,
-            authorization = authorization
-        )
         val ofdCommandRequestBuilder = kz.mybrain.superkassa.core.application.service.OfdCommandRequestBuilder(ofdConfigPort)
         val ofdSyncService = kz.mybrain.superkassa.core.application.service.OfdSyncService(
             storage = storage,
@@ -172,6 +165,14 @@ class CoreIntegrationTest {
             tokenCodec = tokenCodec,
             autonomousModeService = autonomousModeService,
             reqNumService = reqNumService
+        )
+        val shiftService = kz.mybrain.superkassa.core.application.service.ShiftService(
+            storage = storage,
+            queue = queuePort,
+            ofdSyncService = ofdSyncService,
+            idGenerator = UuidGenerator,
+            clock = SystemClock,
+            authorization = authorization
         )
         val kkmRegistrationService = kz.mybrain.superkassa.core.application.service.KkmRegistrationService(
             storage = storage,

@@ -6,11 +6,11 @@ import kz.mybrain.superkassa.core.application.error.ValidationException
 import kz.mybrain.superkassa.core.domain.model.KkmMode
 import kz.mybrain.superkassa.core.domain.model.KkmState
 import kz.mybrain.superkassa.core.domain.model.UserRole
-import kz.mybrain.superkassa.core.domain.port.QueuePort
+import kz.mybrain.superkassa.core.domain.port.OfflineQueuePort
 import kz.mybrain.superkassa.core.domain.port.StoragePort
-import kz.mybrain.superkassa.queue.domain.model.QueueLane
-import kz.mybrain.superkassa.queue.domain.model.QueueStatus
-import kz.mybrain.superkassa.queue.domain.port.QueueStoragePort
+import kz.mybrain.superkassa.offline_queue.domain.model.QueueLane
+import kz.mybrain.superkassa.offline_queue.domain.model.QueueStatus
+import kz.mybrain.superkassa.offline_queue.domain.port.QueueStoragePort
 
 /**
  * Сервис управления очередью ОФД для одной ККМ.
@@ -19,7 +19,7 @@ import kz.mybrain.superkassa.queue.domain.port.QueueStoragePort
  */
 class QueueManagementService(
     private val storage: StoragePort,
-    private val queuePort: QueuePort,
+    private val queuePort: OfflineQueuePort,
     private val queueStorage: QueueStoragePort,
     private val authorization: AuthorizationService
 ) {
@@ -35,15 +35,16 @@ class QueueManagementService(
     )
 
     /**
-     * Возвращает список задач очереди по ККМ (online/offline) для диагностики.
+     * Возвращает список задач offline-очереди по ККМ для диагностики.
      */
     fun listQueue(kkmId: String, pin: String): List<QueueItemView> {
-        requireProgrammingAndNoOpenShift(kkmId, pin)
+        // Для просмотра очереди достаточно прав ADMIN, без ограничений по режиму и смене
+        val kkm = authorization.requireKkm(kkmId)
+        authorization.requireRole(kkm.id, pin, setOf(UserRole.ADMIN))
 
-        val online = queueStorage.listByCashbox(kkmId, QueueLane.ONLINE, limit = 100, offset = 0)
         val offline = queueStorage.listByCashbox(kkmId, QueueLane.OFFLINE, limit = 100, offset = 0)
 
-        return (online + offline).map {
+        return offline.map {
             QueueItemView(
                 id = it.id,
                 lane = it.lane.name,
@@ -62,35 +63,23 @@ class QueueManagementService(
      */
     fun retryFailed(kkmId: String, pin: String): Int {
         requireProgrammingAndNoOpenShift(kkmId, pin)
-
-        val nowHasQueued = queuePort.hasQueuedCommands(kkmId)
-        if (!nowHasQueued) {
-            // Нечего ретраить – просто возвращаем 0.
-            return 0
-        }
-
-        var updated = 0
-        storage.inTransaction {
-            val online = queueStorage.listByCashbox(kkmId, QueueLane.ONLINE, limit = 100, offset = 0)
+        return storage.inTransaction {
             val offline = queueStorage.listByCashbox(kkmId, QueueLane.OFFLINE, limit = 100, offset = 0)
-
-            (online + offline)
-                .filter { it.status == QueueStatus.FAILED }
-                .forEach { cmd ->
-                    val nextAttemptAt: Long? = null
-                    val ok = queueStorage.updateStatus(
-                        id = cmd.id,
-                        status = QueueStatus.PENDING,
-                        attempt = cmd.attempt,
-                        lastError = null,
-                        nextAttemptAt = nextAttemptAt
-                    )
-                    if (ok) {
-                        updated++
-                    }
-                }
+            val failed = offline.filter { it.status == QueueStatus.FAILED }
+            if (failed.isEmpty()) return@inTransaction 0
+            var updated = 0
+            failed.forEach { cmd ->
+                val ok = queueStorage.updateStatus(
+                    id = cmd.id,
+                    status = QueueStatus.PENDING,
+                    attempt = cmd.attempt,
+                    lastError = null,
+                    nextAttemptAt = null
+                )
+                if (ok) updated++
+            }
+            updated
         }
-        return updated
     }
 
     /**
@@ -120,4 +109,3 @@ class QueueManagementService(
         }
     }
 }
-

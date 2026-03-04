@@ -3,6 +3,7 @@ package kz.mybrain.superkassa.core.application.model
 import io.swagger.v3.oas.annotations.media.Schema
 import jakarta.validation.constraints.NotBlank
 import kotlinx.serialization.Serializable
+import kz.mybrain.superkassa.core.domain.model.VatGroup
 
 /**
  * Упрощенный запрос на инициализацию ККМ без черновика.
@@ -30,8 +31,9 @@ data class KkmInitSimpleRequest(
     val ofdToken: String,
 
     @Schema(
-        description = "Не используется. ПИН-код администратора передаётся только в заголовке Authorization",
-        example = "deprecated"
+        description = "Базовая группа НДС по умолчанию: NO_VAT, VAT_0, VAT_5, VAT_10, VAT_16. " +
+            "Если не указана — считается NO_VAT (касса не плательщик НДС).",
+        example = "NO_VAT"
     )
-    val _unused: String? = null
+    val defaultVatGroup: VatGroup = VatGroup.NO_VAT
 )

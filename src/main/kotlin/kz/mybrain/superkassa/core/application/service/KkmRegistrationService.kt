@@ -3,6 +3,7 @@ package kz.mybrain.superkassa.core.application.service
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
+import java.security.SecureRandom
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -14,11 +15,8 @@ import kz.mybrain.superkassa.core.application.error.ConflictException
 import kz.mybrain.superkassa.core.application.error.ErrorMessages
 import kz.mybrain.superkassa.core.application.error.ForbiddenException
 import kz.mybrain.superkassa.core.application.error.ValidationException
-import kz.mybrain.superkassa.core.application.model.DraftKkmRequest
-import kz.mybrain.superkassa.core.application.model.DraftKkmResponse
-import kz.mybrain.superkassa.core.application.model.KkmDraftUpdateRequest
+import kz.mybrain.superkassa.core.application.model.FactoryNumberResponse
 import kz.mybrain.superkassa.core.application.model.KkmInitDirectRequest
-import kz.mybrain.superkassa.core.application.model.KkmInitDraftRequest
 import kz.mybrain.superkassa.core.application.model.KkmInitSimpleRequest
 import kz.mybrain.superkassa.core.application.policy.CounterKeyFormats
 import kz.mybrain.superkassa.core.application.policy.CounterScopes
@@ -63,72 +61,26 @@ class KkmRegistrationService(
     private val registeredMode = KkmMode.REGISTRATION.name
     private val registeredState = KkmState.ACTIVE.name
     private val systemCounterId = "_system"
-    private val factoryCounterKey = "kkm.factory.seq"
     private val defaultAdminPin = "0000"
     private val defaultAdminName = "Администратор"
     private val defaultCashierName = "Кассир"
 
     /**
-     * Инициализация черновика ККМ через команду COMMAND_SYSTEM и COMMAND_INFO.
-     *
-     * @param request Параметры для инициализации черновика.
-     * @return Обновленная информация о ККМ.
-     * @throws ValidationException Если параметры некорректны (например, пустой systemId).
-     * @throws ConflictException Если ККМ уже существует или есть конфликт по systemId.
+     * Генерирует заводской номер и год выпуска без создания записи ККМ.
+     * Используется, чтобы получить данные для регистрации ККМ в ОФД до вызова /kkm/init.
+     * Не привязан к конкретной ККМ и не требует PIN.
      */
-    fun initDraftKkm(pin: String, request: KkmInitDraftRequest): KkmInfo {
+    fun generateFactoryInfo(): FactoryNumberResponse {
         ensureSystemTimeValid()
-        requireBootstrapAdminPin(pin)
-        if (request.ofdSystemId.isBlank()) {
-            throw ValidationException(ErrorMessages.kkmSystemIdRequired(), "KKM_SYSTEM_ID_REQUIRED")
-        }
-        val draft = authorization.requireKkm(request.kkmId)
-        if (!isDraft(draft)) {
-            throw ConflictException(ErrorMessages.kkmExists(), "KKM_EXISTS")
-        }
-        val existingBySystem = storage.findKkmBySystemId(request.ofdSystemId)
-        if (existingBySystem != null && existingBySystem.id != draft.id) {
-            throw ConflictException(
-                ErrorMessages.kkmSystemIdExists(request.ofdSystemId),
-                "KKM_SYSTEM_ID_EXISTS"
-            )
-        }
-        val ofdTag =
-            draft.ofdProvider
-                ?: throw ValidationException(
-                    ErrorMessages.ofdProviderRequired(),
-                    "OFD_PROVIDER_REQUIRED"
-                )
-        val (providerId, environmentId) = ofdConfig.parseTag(ofdTag)
-        ofdConfig.validateAndFormatTag(providerId, environmentId)
-        val factoryNumber = draft.factoryNumber ?: generateFactoryNumber()
-        val year = draft.manufactureYear ?: currentYear()
-        val baseInfo =
-            draft.copy(
-                updatedAt = clock.now(),
-                ofdProvider = ofdTag,
-                factoryNumber = factoryNumber,
-                manufactureYear = year,
-                systemId = request.ofdSystemId,
-                ofdServiceInfo = request.serviceInfo ?: defaultServiceInfo()
-            )
-
-        return performKkmInitialization(
-            KkmInitializationParams(
-                baseInfo = baseInfo,
-                ofdToken = request.ofdToken,
-                registrationNumber = request.kkmKgdId,
-                factoryNumber = factoryNumber,
-                ofdTag = ofdTag,
-                updateKkm = { updatedKkm ->
-                    val updated = storage.updateKkm(updatedKkm)
-                    if (!updated) {
-                        throw ConflictException(ErrorMessages.kkmExists(), "KKM_EXISTS")
-                    }
-                }
-            )
+        val factoryNumber = generateFactoryNumber()
+        val year = currentYear()
+        return FactoryNumberResponse(
+            factoryNumber = factoryNumber,
+            manufactureYear = year
         )
     }
+
+    // Инициализация черновика ККМ (initDraftKkm) удалена в пользу прямой инициализации.
 
     /**
      * Инициализация ККМ без черновика через COMMAND_SYSTEM и COMMAND_INFO.
@@ -298,6 +250,13 @@ class KkmRegistrationService(
         val now2 = clock.now()
         val shiftNo = extractShiftNumber(infoResult.responseJson)
         val finalToken = infoResult.responseToken ?: initialToken
+        val finalDefaultVatGroup = request.defaultVatGroup
+        val finalTaxRegime = when (finalDefaultVatGroup) {
+            kz.mybrain.superkassa.core.domain.model.VatGroup.NO_VAT ->
+                kz.mybrain.superkassa.core.domain.model.TaxRegime.NO_VAT
+            else ->
+                kz.mybrain.superkassa.core.domain.model.TaxRegime.VAT_PAYER
+        }
         
         val finalKkm = KkmInfo(
             id = kkmId,
@@ -313,7 +272,9 @@ class KkmRegistrationService(
             ofdServiceInfo = resolvedServiceInfo,
             tokenEncryptedBase64 = tokenCodec.encodeToken(finalToken),
             tokenUpdatedAt = now2,
-            lastShiftNo = shiftNo
+            lastShiftNo = shiftNo,
+            taxRegime = finalTaxRegime,
+            defaultVatGroup = finalDefaultVatGroup
         )
 
         storage.inTransaction {
@@ -372,42 +333,7 @@ class KkmRegistrationService(
             ?: pos?.get("factoryNum")?.jsonPrimitive?.contentOrNull
     }
 
-    /**
-     * Создает черновик ККМ: генерирует идентификатор, заводской номер и год выпуска. Черновик
-     * сохраняется в storage как обычная запись ККМ.
-     *
-     * @param request Параметры создания черновика.
-     * @return Ответ с данными черновика (id, заводской номер, год).
-     */
-    fun createDraftKkm(pin: String, request: DraftKkmRequest): DraftKkmResponse {
-        ensureSystemTimeValid()
-        requireBootstrapAdminPin(pin)
-        val now = clock.now()
-        val ofdTag = validateOfd(request.ofdId, request.ofdEnvironment)
-        val kkmId = idGenerator.nextId()
-        val factoryNumber = generateFactoryNumber()
-        val year = currentYear()
-        val info =
-            KkmInfo(
-                id = kkmId,
-                createdAt = now,
-                updatedAt = now,
-                mode = draftMode,
-                state = draftState,
-                ofdProvider = ofdTag,
-                factoryNumber = factoryNumber,
-                manufactureYear = year
-            )
-        storage.inTransaction {
-            storage.createKkm(info)
-            ensureDefaultUsers(kkmId, now)
-        }
-        return DraftKkmResponse(
-            kkmId = kkmId,
-            factoryNumber = factoryNumber,
-            manufactureYear = year
-        )
-    }
+    // createDraftKkm удалён; генерация ЗНМ вынесена в generateFactoryInfo
 
     /**
      * Обновляет данные черновика ККМ. Возможно только если ККМ находится в статусе IDLE (черновик).
@@ -418,55 +344,7 @@ class KkmRegistrationService(
      * @throws ValidationException Если ККМ не является черновиком или не в статусе IDLE.
      * @throws ConflictException Если есть конфликт по systemId.
      */
-    fun updateDraftKkm(kkmId: String, pin: String, request: KkmDraftUpdateRequest): KkmInfo {
-        authorization.requireRole(kkmId, pin, setOf(UserRole.ADMIN))
-        val existing = authorization.requireKkm(kkmId)
-        if (!isDraft(existing)) {
-            throw ValidationException(ErrorMessages.kkmNotDraft(), "KKM_NOT_DRAFT")
-        }
-        if (existing.state != KkmState.IDLE.name) {
-            throw ValidationException(ErrorMessages.kkmDraftNotIdle(), "KKM_DRAFT_NOT_IDLE")
-        }
-        if (request.ofdId == null &&
-            request.ofdEnvironment == null &&
-            request.ofdSystemId == null &&
-            request.factoryNumber == null &&
-            request.manufactureYear == null
-        ) {
-            throw ValidationException(ErrorMessages.draftUpdateEmpty(), "DRAFT_UPDATE_EMPTY")
-        }
-        if ((request.ofdId == null) != (request.ofdEnvironment == null)) {
-            throw ValidationException(ErrorMessages.ofdPairRequired(), "OFD_PAIR_REQUIRED")
-        }
-        if (request.ofdSystemId != null && request.ofdSystemId.isBlank()) {
-            throw ValidationException(ErrorMessages.kkmSystemIdRequired(), "KKM_SYSTEM_ID_REQUIRED")
-        }
-        if (request.ofdSystemId != null) {
-            val existingBySystem = storage.findKkmBySystemId(request.ofdSystemId)
-            if (existingBySystem != null && existingBySystem.id != existing.id) {
-                throw ConflictException(
-                    ErrorMessages.kkmSystemIdExists(request.ofdSystemId),
-                    "KKM_SYSTEM_ID_EXISTS"
-                )
-            }
-        }
-        val ofdTag =
-            if (request.ofdId != null && request.ofdEnvironment != null) {
-                validateOfd(request.ofdId, request.ofdEnvironment)
-            } else {
-                existing.ofdProvider
-            }
-        val updated =
-            existing.copy(
-                updatedAt = clock.now(),
-                ofdProvider = ofdTag,
-                systemId = request.ofdSystemId ?: existing.systemId,
-                factoryNumber = request.factoryNumber ?: existing.factoryNumber,
-                manufactureYear = request.manufactureYear ?: existing.manufactureYear
-            )
-        storage.updateKkm(updated)
-        return updated
-    }
+    // updateDraftKkm удалён
 
     /**
      * Параметры для инициализации ККМ.
@@ -712,16 +590,14 @@ class KkmRegistrationService(
         ofdConfig.validateAndFormatTag(providerId, environmentId)
 
     private fun generateFactoryNumber(): String {
-        val next = nextSystemCounter(factoryCounterKey)
-        val year = currentYear()
-        return "SN$year${next.toString().padStart(6, '0')}"
-    }
-
-    private fun nextSystemCounter(key: String): Long {
-        val current = storage.loadCounters(systemCounterId, CounterScopes.GLOBAL, null)[key] ?: 0L
-        val next = current + 1L
-        storage.upsertCounter(systemCounterId, CounterScopes.GLOBAL, null, key, next)
-        return next
+        // Стейтлес-генератор ЗНМ: год + случайный суффикс без обращения к хранилищу
+        val year = currentYear() % 100 // две последние цифры года
+        val random = SecureRandom()
+        // 8 случайных байт → 16 hex-символов, обрезаем до 10
+        val bytes = ByteArray(8)
+        random.nextBytes(bytes)
+        val hex = bytes.joinToString(separator = "") { "%02X".format(it) }.take(10)
+        return "KZT%02d%s".format(year, hex)
     }
 
     private fun currentYear(): Int {

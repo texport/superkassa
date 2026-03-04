@@ -20,7 +20,6 @@ import kz.mybrain.superkassa.core.application.http.ApiResponseMessages.MSG_409_S
 import kz.mybrain.superkassa.core.application.http.ApiResponseMessages.MSG_409_SHIFT_OPEN
 import kz.mybrain.superkassa.core.application.http.annotation.KkmApiResponses
 import kz.mybrain.superkassa.core.application.http.utils.AuthHeaderUtils
-import kz.mybrain.superkassa.core.application.model.CloseShiftRequest
 import kz.mybrain.superkassa.core.application.model.DeliveryRetryItemResponse
 import kz.mybrain.superkassa.core.application.model.DeliveryRetryResponse
 import kz.mybrain.superkassa.core.application.model.PinRequest
@@ -140,8 +139,7 @@ class KkmController(private val kkmService: KkmService) {
         )
         fun closeShift(
                 @PathVariable kkmId: String,
-                @RequestHeader("Authorization") authHeader: String?,
-                @RequestBody @Valid request: CloseShiftRequest
+                @RequestHeader("Authorization") authHeader: String?
         ): ReportResult {
                 val pin = AuthHeaderUtils.extractPin(authHeader)
                 return kkmService.closeShift(kkmId, pin)
@@ -234,47 +232,54 @@ class KkmController(private val kkmService: KkmService) {
         }
 
         /**
-         * Универсальная печатная форма (HTML). Поддерживает все типы: DOCUMENT (чек, внесение, изъятие),
-         * X_REPORT, OPEN_SHIFT, CLOSE_SHIFT. Для DOCUMENT обязателен documentId, для CLOSE_SHIFT — shiftId.
+         * Печатная форма HTML по конкретному документу (чек, внесение, изъятие) без указания type.
+         * Упрощённый вариант для вызова по связке (kkmId + documentId).
          */
-        @GetMapping("/{kkmId}/print/html", produces = [MediaType.TEXT_HTML_VALUE])
+        @GetMapping("/{kkmId}/documents/{documentId}/print.html", produces = [MediaType.TEXT_HTML_VALUE])
         @Operation(
-            summary = "Печатная форма (HTML)",
-            description = """
-                Единый эндпоинт для печатных форм. Параметр type: DOCUMENT | X_REPORT | OPEN_SHIFT | CLOSE_SHIFT.
-                - DOCUMENT: documentId обязателен (чек, внесение или изъятие по id документа).
-                - X_REPORT, OPEN_SHIFT: только kkmId (текущая открытая смена).
-                - CLOSE_SHIFT: shiftId обязателен (Z-отчёт по смене).
-            """
+            summary = "Печатная форма документа (HTML)",
+            description = "Печать конкретного документа (чек, внесение, изъятие) по его идентификатору. " +
+                "Параметр type не требуется — определяется по документу."
         )
-        @KkmApiResponses(ok = MSG_200_PRINT_HTML, forbidden = MSG_403_FORBIDDEN, notFound = MSG_404_DOCUMENT_NOT_FOUND, conflict = MSG_409_SHIFT_NOT_OPEN)
-        fun getPrintHtml(
-                @PathVariable kkmId: String,
-                @RequestParam type: PrintDocumentType,
-                @RequestParam(required = false) documentId: String?,
-                @RequestParam(required = false) shiftId: String?,
-                @RequestHeader("Authorization") authHeader: String?
+        @KkmApiResponses(
+            ok = MSG_200_PRINT_HTML,
+            forbidden = MSG_403_FORBIDDEN,
+            notFound = MSG_404_DOCUMENT_NOT_FOUND
+        )
+        fun getDocumentPrintHtml(
+            @PathVariable kkmId: String,
+            @PathVariable documentId: String,
+            @RequestHeader("Authorization") authHeader: String?
         ): String {
-                val pin = AuthHeaderUtils.extractPin(authHeader)
-                return kkmService.getPrintHtml(kkmId, type, documentId, shiftId, pin)
+            val pin = AuthHeaderUtils.extractPin(authHeader)
+            return kkmService.getPrintHtml(kkmId, PrintDocumentType.DOCUMENT, documentId, null, pin)
         }
 
         /**
-         * Универсальная печатная форма (PDF). Те же параметры, что и для print/html.
+         * Печатная форма PDF по конкретному документу (чек, внесение, изъятие) без указания type.
+         * Упрощённый вариант для вызова по связке (kkmId + documentId).
          */
-        @GetMapping("/{kkmId}/print/pdf", produces = [MediaType.APPLICATION_PDF_VALUE])
-        @Operation(summary = "Печатная форма (PDF)", description = "Тот же набор типов (type, documentId, shiftId), что и для GET .../print/html. Возвращает PDF.")
-        @KkmApiResponses(ok = MSG_200_RECEIPT_PDF, forbidden = MSG_403_FORBIDDEN, notFound = MSG_404_DOCUMENT_NOT_FOUND, conflict = MSG_409_SHIFT_NOT_OPEN)
-        fun getPrintPdf(
-                @PathVariable kkmId: String,
-                @RequestParam type: PrintDocumentType,
-                @RequestParam(required = false) documentId: String?,
-                @RequestParam(required = false) shiftId: String?,
-                @RequestHeader("Authorization") authHeader: String?
+        @GetMapping("/{kkmId}/documents/{documentId}/print.pdf", produces = [MediaType.APPLICATION_PDF_VALUE])
+        @Operation(
+            summary = "Печатная форма документа (PDF)",
+            description = "Печать конкретного документа (чек, внесение, изъятие) в формате PDF по его идентификатору. " +
+                "Параметр type не требуется — определяется по документу."
+        )
+        @KkmApiResponses(
+            ok = MSG_200_RECEIPT_PDF,
+            forbidden = MSG_403_FORBIDDEN,
+            notFound = MSG_404_DOCUMENT_NOT_FOUND
+        )
+        fun getDocumentPrintPdf(
+            @PathVariable kkmId: String,
+            @PathVariable documentId: String,
+            @RequestHeader("Authorization") authHeader: String?
         ): ResponseEntity<ByteArray> {
-                val pin = AuthHeaderUtils.extractPin(authHeader)
-                val bytes = kkmService.getPrintPdf(kkmId, type, documentId, shiftId, pin)
-                return ResponseEntity.ok().contentType(MediaType.APPLICATION_PDF).body(bytes)
+            val pin = AuthHeaderUtils.extractPin(authHeader)
+            val bytes = kkmService.getPrintPdf(kkmId, PrintDocumentType.DOCUMENT, documentId, null, pin)
+            return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
+                .body(bytes)
         }
 
         @PostMapping("/{kkmId}/documents/{documentId}/delivery/retry")

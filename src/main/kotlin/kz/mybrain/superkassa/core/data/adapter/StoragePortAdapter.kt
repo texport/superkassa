@@ -3,6 +3,7 @@ package kz.mybrain.superkassa.core.data.adapter
 import kz.mybrain.superkassa.core.domain.model.CounterSnapshot
 import kz.mybrain.superkassa.core.domain.model.FiscalDocumentSnapshot
 import kz.mybrain.superkassa.core.domain.model.KkmInfo
+import kz.mybrain.superkassa.core.domain.model.QueueTaskDto
 import kz.mybrain.superkassa.core.domain.model.OfdServiceInfo
 import kz.mybrain.superkassa.core.domain.model.KkmUser
 import kz.mybrain.superkassa.core.domain.model.UserRole
@@ -18,6 +19,7 @@ import kz.mybrain.superkassa.storage.domain.config.StorageConfig
 import kz.mybrain.superkassa.storage.domain.model.CashboxRecord as StorageKkmRecord
 import kz.mybrain.superkassa.storage.domain.model.FiscalDocumentRecord
 import kz.mybrain.superkassa.storage.domain.model.KkmUserRecord
+import kz.mybrain.superkassa.storage.domain.model.QueueTaskRecord
 import kz.mybrain.superkassa.storage.domain.model.ShiftRecord
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
@@ -187,11 +189,116 @@ class StoragePortAdapter(
         }
     }
 
+    @Deprecated("Используйте OfflineQueuePort.canSendDirectly")
     override fun hasOfflineQueue(kkmId: String): Boolean {
         return withSession { session ->
-            session.offlineQueue.listByCashbox(kkmId, 1).isNotEmpty()
+            session.queueTask.listByCashbox(kkmId, "OFFLINE", 100, 0)
+                .any { it.status != "SENT" }
         }
     }
+
+    override fun enqueueQueueTask(dto: QueueTaskDto): Boolean {
+        return withSession { session ->
+            session.queueTask.enqueue(toRecord(dto))
+        }
+    }
+
+    override fun listQueueTasksByCashbox(
+        cashboxId: String,
+        lane: String,
+        limit: Int,
+        offset: Int
+    ): List<QueueTaskDto> {
+        return withSession { session ->
+            session.queueTask.listByCashbox(cashboxId, lane, limit, offset).map { toDto(it) }
+        }
+    }
+
+    override fun nextPendingQueueTask(cashboxId: String, lane: String, now: Long): QueueTaskDto? {
+        return withSession { session ->
+            session.queueTask.nextPending(cashboxId, lane, now)?.let { toDto(it) }
+        }
+    }
+
+    override fun updateQueueTaskStatus(
+        id: String,
+        status: String,
+        attempt: Int,
+        lastError: String?,
+        nextAttemptAt: Long?
+    ): Boolean {
+        return withSession { session ->
+            session.queueTask.updateStatus(id, status, attempt, lastError, nextAttemptAt)
+        }
+    }
+
+    override fun markQueueTaskInProgress(id: String, now: Long): Boolean {
+        return withSession { session ->
+            session.queueTask.markInProgress(id, now)
+        }
+    }
+
+    override fun deleteQueueTasksByCashbox(cashboxId: String): Boolean {
+        return withSession { session ->
+            session.queueTask.deleteByCashbox(cashboxId)
+        }
+    }
+
+    override fun tryAcquireQueueLock(
+        cashboxId: String,
+        ownerId: String,
+        leaseUntil: Long,
+        acquiredAt: Long
+    ): Boolean {
+        return withSession { session ->
+            session.queueLock.tryAcquire(cashboxId, ownerId, leaseUntil, acquiredAt)
+        }
+    }
+
+    override fun renewQueueLock(
+        cashboxId: String,
+        ownerId: String,
+        leaseUntil: Long,
+        now: Long
+    ): Boolean {
+        return withSession { session ->
+            session.queueLock.renew(cashboxId, ownerId, leaseUntil, now)
+        }
+    }
+
+    override fun releaseQueueLock(cashboxId: String, ownerId: String): Boolean {
+        return withSession { session ->
+            session.queueLock.release(cashboxId, ownerId)
+        }
+    }
+
+    private fun toRecord(dto: QueueTaskDto): QueueTaskRecord =
+        QueueTaskRecord(
+            id = dto.id,
+            cashboxId = dto.cashboxId,
+            lane = dto.lane,
+            type = dto.type,
+            payloadRef = dto.payloadRef,
+            createdAt = dto.createdAt,
+            status = dto.status,
+            attempt = dto.attempt,
+            nextAttemptAt = dto.nextAttemptAt,
+            lastError = dto.lastError
+        )
+
+    private fun toDto(record: QueueTaskRecord): QueueTaskDto =
+        QueueTaskDto(
+            id = record.id,
+            cashboxId = record.cashboxId,
+            lane = record.lane,
+            type = record.type,
+            payloadRef = record.payloadRef,
+            createdAt = record.createdAt,
+            status = record.status,
+            attempt = record.attempt,
+            nextAttemptAt = record.nextAttemptAt,
+            lastError = record.lastError
+        )
 
     override fun deleteKkmCompletely(kkmId: String): Boolean {
         return withSession { session ->
@@ -199,6 +306,7 @@ class StoragePortAdapter(
                 session.locks.deleteByCashbox(kkmId)
                 session.idempotency.deleteByCashbox(kkmId)
                 session.offlineQueue.deleteByCashbox(kkmId)
+                session.queueTask.deleteByCashbox(kkmId)
                 session.users.deleteByCashbox(kkmId)
                 session.documents.deleteByCashbox(kkmId)
                 session.journal.deleteByCashbox(kkmId)
@@ -454,7 +562,7 @@ class StoragePortAdapter(
 
     override fun countOfflineQueue(): Long {
         return withSession { session ->
-            session.offlineQueue.countAll()
+            session.queueTask.countPendingByLane("OFFLINE")
         }
     }
 

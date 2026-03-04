@@ -18,12 +18,19 @@ import kz.mybrain.superkassa.core.application.service.OfdCommandRequestBuilder
 import kz.mybrain.superkassa.core.application.service.OfdSyncService
 import kz.mybrain.superkassa.core.application.service.QueueManagementService
 import kz.mybrain.superkassa.core.application.service.ReqNumService
+import kz.mybrain.superkassa.core.application.service.ShiftCountersRecalculator
 import kz.mybrain.superkassa.core.application.service.ShiftService
 import kz.mybrain.superkassa.core.data.adapter.DeliveryPortAdapter
+import kz.mybrain.superkassa.core.data.adapter.CloseShiftRequestBuilderStrategy
+import kz.mybrain.superkassa.core.data.adapter.MoneyPlacementRequestBuilderStrategy
 import kz.mybrain.superkassa.core.data.adapter.OfdConfigPortAdapter
+import kz.mybrain.superkassa.core.data.adapter.ReportRequestBuilderStrategy
 import kz.mybrain.superkassa.core.data.adapter.OfdManagerAdapter
+import kz.mybrain.superkassa.core.data.adapter.ServiceRequestBuilderStrategy
+import kz.mybrain.superkassa.core.data.adapter.TicketRequestBuilderStrategy
 import kz.mybrain.superkassa.core.data.adapter.ResilienceOfdManagerPortAdapter
-import kz.mybrain.superkassa.core.data.adapter.QueuePortAdapter
+import kz.mybrain.superkassa.core.data.adapter.OfflineQueuePortAdapter
+import kz.mybrain.superkassa.core.data.adapter.StorageBackedQueueStoragePort
 import kz.mybrain.superkassa.core.data.adapter.Sha256PinHasherPort
 import kz.mybrain.superkassa.core.data.adapter.StoragePortAdapter
 import kz.mybrain.superkassa.core.data.ofd.OfdCodecService
@@ -34,15 +41,9 @@ import kz.mybrain.superkassa.delivery.domain.model.DeliveryChannel
 import kz.mybrain.superkassa.delivery.domain.model.DeliveryRequest
 import kz.mybrain.superkassa.delivery.domain.model.DeliveryResult
 import kz.mybrain.superkassa.delivery.domain.port.DeliveryAdapter
-import kz.mybrain.superkassa.queue.application.model.DispatchResult
-import kz.mybrain.superkassa.queue.application.service.QueueCommandHandler
-import kz.mybrain.superkassa.queue.data.inmemory.InMemoryLeaseLockPort
-import kz.mybrain.superkassa.queue.data.inmemory.InMemoryQueueStoragePort
-import kz.mybrain.superkassa.queue.data.jdbc.DataSourceLeaseLockPort
-import kz.mybrain.superkassa.queue.data.jdbc.DataSourceQueueStoragePort
-import kz.mybrain.superkassa.queue.domain.model.QueueStatus
-import kz.mybrain.superkassa.queue.domain.port.LeaseLockPort
-import kz.mybrain.superkassa.queue.domain.port.QueueStoragePort
+import kz.mybrain.superkassa.offline_queue.application.service.QueueCommandHandler
+import kz.mybrain.superkassa.offline_queue.domain.port.LeaseLockPort
+import kz.mybrain.superkassa.offline_queue.domain.port.QueueStoragePort
 import kz.mybrain.superkassa.storage.data.jdbc.HikariConfigFactory
 import com.zaxxer.hikari.HikariDataSource
 import kz.mybrain.superkassa.storage.application.health.StorageHealthChecker
@@ -52,6 +53,7 @@ import kz.mybrain.superkassa.storage.domain.config.StorageConfig
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.Lazy
 import java.nio.file.Paths
 
 @Configuration
@@ -102,42 +104,35 @@ class AppConfig {
     }
 
     @Bean
-    fun queueStoragePort(settings: CoreSettings, storageConfig: StorageConfig): QueueStoragePort {
-        return when (settings.mode) {
-            CoreMode.DESKTOP -> {
-                logger.info("Using in-memory queue storage for DESKTOP mode")
-                InMemoryQueueStoragePort()
-            }
-            CoreMode.SERVER -> {
-                logger.info("Using JDBC queue storage for SERVER mode")
-                val hikariConfig = HikariConfigFactory.fromStorageConfig(storageConfig)
-                val dataSource = HikariDataSource(hikariConfig)
-                DataSourceQueueStoragePort(dataSource)
-            }
-        }
+    fun queueStoragePort(storagePort: StoragePort): QueueStoragePort {
+        return StorageBackedQueueStoragePort(storagePort)
     }
 
     @Bean
-    fun queueLeaseLockPort(settings: CoreSettings, storageConfig: StorageConfig): LeaseLockPort {
-        return when (settings.mode) {
-            CoreMode.DESKTOP -> InMemoryLeaseLockPort()
-            CoreMode.SERVER -> {
-                val hikariConfig = HikariConfigFactory.fromStorageConfig(storageConfig)
-                val dataSource = HikariDataSource(hikariConfig)
-                DataSourceLeaseLockPort(dataSource)
-            }
-        }
+    fun queueLeaseLockPort(storagePort: StoragePort): LeaseLockPort {
+        return kz.mybrain.superkassa.core.data.adapter.StorageBackedLeaseLockPort(storagePort)
     }
+
+    @Bean
+    fun queueCommandHandler(
+        ofdSyncService: OfdSyncService,
+        storagePort: StoragePort
+    ): QueueCommandHandler =
+        kz.mybrain.superkassa.core.application.service.OfdQueueCommandHandler(
+            ofdSyncService = ofdSyncService,
+            storage = storagePort,
+            clock = SystemClock
+        )
 
     @Bean
     fun queuePort(
         settings: CoreSettings,
         queueStoragePort: QueueStoragePort,
-        queueLeaseLockPort: LeaseLockPort
-    ): QueuePort {
+        queueLeaseLockPort: LeaseLockPort,
+        queueCommandHandler: QueueCommandHandler
+    ): OfflineQueuePort {
         val ownerId = settings.nodeId
-        val queueHandler = QueueCommandHandler { DispatchResult(QueueStatus.SENT) }
-        return QueuePortAdapter(queueStoragePort, queueLeaseLockPort, queueHandler, ownerId = ownerId)
+        return OfflineQueuePortAdapter(queueStoragePort, queueLeaseLockPort, queueCommandHandler, ownerId = ownerId)
     }
 
     @Bean
@@ -221,11 +216,20 @@ class AppConfig {
         KkmUserService(storage, UuidGenerator, SystemClock, pinHasher, authorization)
 
     @Bean
-    fun ofdManagerPort(settings: CoreSettings): OfdManagerPort {
+    fun ofdManagerPort(settings: CoreSettings, storage: StoragePort): OfdManagerPort {
+        val shiftCountersRecalculator = ShiftCountersRecalculator(storage)
+        val requestBuilders = listOf(
+            ServiceRequestBuilderStrategy(),
+            MoneyPlacementRequestBuilderStrategy(storage),
+            ReportRequestBuilderStrategy(storage, shiftCountersRecalculator),
+            CloseShiftRequestBuilderStrategy(storage, shiftCountersRecalculator),
+            TicketRequestBuilderStrategy()
+        )
         val delegate = OfdManagerAdapter(
             OfdConfig(protocolVersion = settings.ofdProtocolVersion),
             OfdCodecService(),
             OfdTcpNetworkClient(),
+            requestBuilders = requestBuilders,
             timeoutSeconds = settings.ofdTimeoutSeconds.coerceAtLeast(5L),
             reconnectIntervalSeconds = settings.ofdReconnectIntervalSeconds.coerceAtLeast(60L)
         )
@@ -243,7 +247,7 @@ class AppConfig {
     @Bean
     fun autonomousModeService(
         storage: StoragePort,
-        queue: QueuePort
+        @Lazy queue: OfflineQueuePort
     ): AutonomousModeService =
         AutonomousModeService(
             storage = storage,
@@ -270,7 +274,7 @@ class AppConfig {
     @Bean
     fun ofdSyncService(
         storage: StoragePort,
-        queue: QueuePort,
+        @Lazy queue: OfflineQueuePort,
         ofd: OfdManagerPort,
         authorization: AuthorizationService,
         ofdCommandRequestBuilder: OfdCommandRequestBuilder,
@@ -294,12 +298,14 @@ class AppConfig {
     @Bean
     fun shiftService(
         storage: StoragePort,
-        queue: QueuePort,
+        queue: OfflineQueuePort,
+        ofdSyncService: OfdSyncService,
         authorization: AuthorizationService
     ): ShiftService =
         ShiftService(
             storage = storage,
             queue = queue,
+            ofdSyncService = ofdSyncService,
             idGenerator = UuidGenerator,
             clock = SystemClock,
             authorization = authorization
@@ -332,7 +338,7 @@ class AppConfig {
     @Bean
     fun kkmService(
         storage: StoragePort,
-        queue: QueuePort,
+        queue: OfflineQueuePort,
         ofd: OfdManagerPort,
         ofdConfig: OfdConfigPort,
         delivery: DeliveryPort,
@@ -380,7 +386,7 @@ class AppConfig {
     @Bean
     fun queueManagementService(
         storage: StoragePort,
-        queuePort: QueuePort,
+        queuePort: OfflineQueuePort,
         queueStoragePort: QueueStoragePort,
         authorization: AuthorizationService
     ): QueueManagementService =

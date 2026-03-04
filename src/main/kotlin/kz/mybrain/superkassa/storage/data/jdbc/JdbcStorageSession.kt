@@ -12,6 +12,8 @@ import kz.mybrain.superkassa.storage.domain.repository.KkmUserRepository
 import kz.mybrain.superkassa.storage.domain.repository.OfdMessageRepository
 import kz.mybrain.superkassa.storage.domain.repository.OfflineQueueRepository
 import kz.mybrain.superkassa.storage.domain.repository.OutboxEventRepository
+import kz.mybrain.superkassa.storage.domain.repository.QueueLockRepository
+import kz.mybrain.superkassa.storage.domain.repository.QueueTaskRepository
 import kz.mybrain.superkassa.storage.domain.repository.ShiftRepository
 import java.sql.Connection
 
@@ -27,6 +29,8 @@ class JdbcStorageSession(
     override val users: KkmUserRepository = JdbcKkmUserRepository(connection)
     override val ofdMessages: OfdMessageRepository = JdbcOfdMessageRepository(connection)
     override val offlineQueue: OfflineQueueRepository = JdbcOfflineQueueRepository(connection)
+    override val queueTask: QueueTaskRepository = JdbcQueueTaskRepository(connection)
+    override val queueLock: QueueLockRepository = JdbcQueueLockRepository(connection)
     override val idempotency: IdempotencyRepository = JdbcIdempotencyRepository(connection)
     override val locks: CashboxLockRepository = JdbcCashboxLockRepository(connection)
     override val shifts: ShiftRepository = JdbcShiftRepository(connection)

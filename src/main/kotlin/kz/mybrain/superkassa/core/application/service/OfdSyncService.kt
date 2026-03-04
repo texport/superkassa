@@ -17,7 +17,7 @@ import kz.mybrain.superkassa.core.domain.model.UserRole
 import kz.mybrain.superkassa.core.domain.port.ClockPort
 import kz.mybrain.superkassa.core.domain.port.IdGenerator
 import kz.mybrain.superkassa.core.domain.port.OfdManagerPort
-import kz.mybrain.superkassa.core.domain.port.QueuePort
+import kz.mybrain.superkassa.core.domain.port.OfflineQueuePort
 import kz.mybrain.superkassa.core.domain.port.StoragePort
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -35,7 +35,7 @@ import java.util.Base64
  */
 class OfdSyncService(
     private val storage: StoragePort,
-    private val queue: QueuePort,
+    private val queue: OfflineQueuePort,
     private val ofd: OfdManagerPort,
     private val idGenerator: IdGenerator,
     private val clock: ClockPort,
@@ -46,6 +46,15 @@ class OfdSyncService(
     private val reqNumService: ReqNumService
 ) {
     private val logger = LoggerFactory.getLogger(OfdSyncService::class.java)
+
+    /**
+     * Отправляет фискальную команду (REPORT, CLOSE_SHIFT и т.п.) в ОФД.
+     * Используется когда offline-очередь пуста.
+     */
+    fun sendFiscalCommand(kkmId: String, commandType: OfdCommandType, payloadRef: String): OfdCommandResult {
+        val kkm = authorization.requireKkm(kkmId)
+        return sendOfdCommand(kkm = kkm, commandType = commandType, payloadRef = payloadRef)
+    }
 
     /**
      * Проверяет связь с ОФД (COMMAND_SYSTEM).
@@ -164,7 +173,7 @@ class OfdSyncService(
             if (openShift != null) {
                 throw ConflictException(ErrorMessages.kkmSyncShiftOpen(), "KKM_SYNC_SHIFT_OPEN")
             }
-            if (queue.hasQueuedCommands(kkmId) || storage.hasOfflineQueue(kkmId)) {
+            if (!queue.canSendDirectly(kkmId)) {
                 throw ConflictException(
                     ErrorMessages.kkmSyncQueueNotEmpty(),
                     "KKM_SYNC_QUEUE_NOT_EMPTY"

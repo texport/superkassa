@@ -2,14 +2,12 @@ package kz.mybrain.superkassa.core.application.http.controllers
 
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
-import jakarta.validation.Valid
 import kz.mybrain.superkassa.core.application.http.ApiResponseMessages.MSG_200_REPORT_ACCEPTED
 import kz.mybrain.superkassa.core.application.http.ApiResponseMessages.MSG_400_BAD_REQUEST
 import kz.mybrain.superkassa.core.application.http.ApiResponseMessages.MSG_403_FORBIDDEN
 import kz.mybrain.superkassa.core.application.http.ApiResponseMessages.MSG_404_KKM_NOT_FOUND
 import kz.mybrain.superkassa.core.application.http.annotation.KkmApiResponses
 import kz.mybrain.superkassa.core.application.http.utils.AuthHeaderUtils
-import kz.mybrain.superkassa.core.application.model.XReportRequest
 import kz.mybrain.superkassa.core.application.service.KkmService
 import kz.mybrain.superkassa.core.domain.model.ReportResult
 import org.springframework.web.bind.annotation.*
@@ -75,8 +73,7 @@ class ReportsController(private val kkmService: KkmService) {
     )
     fun createXReport(
         @PathVariable kkmId: String,
-        @RequestHeader("Authorization") authHeader: String?,
-        @RequestBody @Valid request: XReportRequest
+        @RequestHeader("Authorization") authHeader: String?
     ): ReportResult {
         val pin = AuthHeaderUtils.extractPin(authHeader)
         return kkmService.createReport(kkmId, pin)
